@@ -1,4 +1,12 @@
-# Project structure
+# CMU MoCap Ingestor
+
+Ingestion pipeline for the CGSpeed CMU BVH motion dataset.
+
+The project parses CMU motion index metadata, extracts BVH file metadata, joins both
+sources into a normalized manifest, and optionally imports the joined records into
+PostgreSQL.
+
+## Repository layout
 
 ```text
 scripts/
@@ -20,7 +28,10 @@ data/manifests/
   motions.json
 ```
 
-The scripts coordinate each pipeline stage:
+Scripts coordinate pipeline stages. Reusable parsing, manifest, and database logic
+belongs in `src/cmu_mocap_ingestor/`.
+
+## Pipeline stages
 
 ```text
 parse_motion_index.py  -> data/manifests/motion_index.json
@@ -29,9 +40,46 @@ build_manifest.py      -> data/manifests/motions.json
 import_postgres.py     -> PostgreSQL rows
 ```
 
-## Keep scripts thin
+The joined manifest uses every BVH as its base. BVHs without motion-index entries
+remain in `motions.json` with derived source IDs and null descriptions.
 
-For example, `scripts/parse_bvh_metadata.py` should coordinate the operation:
+## Setup
+
+Run commands from the repository root with the virtual environment activated.
+
+```powershell
+python -m pip install -e .[dev]
+```
+
+## Run the pipeline
+
+```powershell
+python .\scripts\parse_motion_index.py
+python .\scripts\parse_bvh_metadata.py
+python .\scripts\build_manifest.py
+```
+
+## Import into PostgreSQL
+
+Create a `.env` file containing:
+
+```dotenv
+DATABASE_URL=postgresql://username:password@localhost:5432/database_name
+```
+
+Then run:
+
+```powershell
+python .\scripts\import_postgres.py
+```
+
+The importer creates `public.motions` if necessary and upserts every record by
+`source_id`.
+
+## Development pattern
+
+Keep scripts thin. For example, `scripts/parse_bvh_metadata.py` should only
+coordinate paths, call package code, and report results:
 
 ```python
 from pathlib import Path
@@ -55,68 +103,45 @@ if __name__ == "__main__":
     main()
 ```
 
-The actual parsing belongs in:
+The actual parsing belongs in `src/cmu_mocap_ingestor/bvh.py`.
 
-`src/cmu_mocap_ingestor/bvh.py`
+## Manifest records
 
-This separation makes the code easier to test and makes the repository look like a proper software project rather than a collection of one-off scripts.
+### Motion index
 
-## Run the pipeline
-
-Run each stage from the repository root with the virtual environment activated:
-
-```powershell
-python .\scripts\parse_motion_index.py
-python .\scripts\parse_bvh_metadata.py
-python .\scripts\build_manifest.py
-```
-
-The joined manifest uses every BVH as its base. BVHs without motion-index entries remain in
-`motions.json` with derived source IDs and null descriptions.
-
-To import the joined manifest into PostgreSQL, create a `.env` file containing:
-
-```dotenv
-DATABASE_URL=postgresql://username:password@localhost:5432/database_name
-```
-
-Then run:
-
-```powershell
-python .\scripts\import_postgres.py
-```
-
-The importer creates `public.motions` if necessary and upserts every record by `source_id`.
-
-
-## Motion Index template (one record)
-```JSON
+```json
 {
-"source_id": "cmu:01:01",
-"subject_id": 1,
-"trial_id": 1,
-"filename": "01_01.bvh",
-"subject_description": "climb, swing, hang on playground equipment",
-"description": "playground - forward jumps, turn around"
+  "source_id": "cmu:01:01",
+  "subject_id": 1,
+  "trial_id": 1,
+  "filename": "01_01.bvh",
+  "subject_description": "climb, swing, hang on playground equipment",
+  "description": "playground - forward jumps, turn around"
 }
 ```
-## BVH Parser template (one record)
 
-filename
-relative path
-subject ID
-trial ID
-SHA-256
-frame count
-frame time
-frame rate
-duration
-joint count
-channel count
-validation status
+### BVH metadata
 
-## Join motion index and BVH (one record)
-```JSON
+```json
+{
+  "filename": "01_01.bvh",
+  "relative_path": "001/01_01.bvh",
+  "subject_id": 1,
+  "trial_id": 1,
+  "sha256": "abc123...",
+  "frame_count": 438,
+  "frame_time": 0.008333,
+  "frame_rate": 120.0048,
+  "duration_seconds": 3.649854,
+  "joint_count": 31,
+  "channel_count": 96,
+  "validation_status": "valid"
+}
+```
+
+### Joined motion manifest
+
+```json
 {
   "source_id": "cmu:01:01",
   "subject_id": 1,
@@ -127,11 +152,30 @@ validation status
   "frame_count": 438,
   "frame_time": 0.008333,
   "frame_rate": 120.0048,
-  "duration_seconds": 3.6499,
+  "duration_seconds": 3.649854,
   "joint_count": 31,
   "channel_count": 96,
   "sha256": "abc123...",
   "validation_status": "valid",
   "relative_path": "001/01_01.bvh"
 }
+```
+
+## Cloudflare R2 architecture notes
+
+```text
+Existing Python repository
+|-- download CMU data
+|-- parse catalog metadata
+|-- process animation files
+|-- upload files to R2
+`-- insert metadata and object keys into PostgreSQL
+
+Catalog backend
+|-- query PostgreSQL
+`-- return animation metadata and R2 object URL
+
+Browser
+|-- request catalog data from backend
+`-- load animation file directly from R2
 ```

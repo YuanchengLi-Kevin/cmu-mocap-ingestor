@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "cmu-mocap-ingestor"
 version = "0.1.0"
 description = "Ingestion pipeline for the CGSpeed CMU BVH motion dataset"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "psycopg[binary]>=3.1",
     "python-dotenv>=1.0",

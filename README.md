@@ -59,6 +59,52 @@ python .\scripts\parse_bvh_metadata.py
 python .\scripts\build_manifest.py
 ```
 
+## Blender retargeting
+
+The CMU BVH files use a consistent source skeleton across the dataset. Retargeting
+can therefore use one source-to-target setup instead of solving a new rig map for
+each clip.
+
+The intended asset layout is:
+
+```text
+humanoid/xbot.glb
+  Mixamo X Bot mesh and skeleton
+
+animations/cmu_01_01.glb
+animations/cmu_01_02.glb
+animations/cmu_01_03.glb
+  animation-only GLBs exported on the X Bot skeleton
+```
+
+The animation GLBs do not directly reference `xbot.glb`. The browser loads the X
+Bot GLB once, then loads each animation GLB and applies its animation clip to the
+already loaded X Bot scene. For this to work, every exported animation clip must
+target the same Mixamo bone names as `xbot.glb`.
+
+The current Blender/Rokoko proof-of-concept is `scripts/blender_single.py`. It:
+
+```text
+imports one CMU BVH
+sets the BVH armature as the Rokoko source
+sets the Mixamo X Bot armature as the Rokoko target
+builds Rokoko's bone list
+removes unsupported hand/finger/thumb mappings
+retargets the motion onto X Bot
+removes the source BVH object and source action
+exports an armature-only GLB with one animation
+```
+
+The scene FPS is set to 120 to preserve CMU BVH timing. If this is left at
+Blender's default FPS, exported animations play in slow motion.
+
+Run the script from a Blender scene that already contains the posed X Bot
+template, or later from headless Blender with a template `.blend`:
+
+```powershell
+blender --background xbot_template.blend --python scripts\blender_single.py
+```
+
 ## Import into PostgreSQL
 
 Create a `.env` file containing:

@@ -13,6 +13,7 @@ __pycache__/
 data/source/
 data/processed/
 data/manifests/
+data/assets
 
 # Editor and OS files
 .vscode/
@@ -20,3 +21,5 @@ data/manifests/
 .DS_Store
 Thumbs.db
 AGENTS.md
+Blender.md
+R2.md

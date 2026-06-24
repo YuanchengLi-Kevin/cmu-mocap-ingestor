@@ -1,30 +1,259 @@
 # Copyright (c) 2026 Yuancheng Li
 # SPDX-License-Identifier: Apache-2.0
 
+"""Retarget one CMU BVH file onto the loaded X Bot template and export a GLB.
+
+Run with Blender, not the project Python interpreter:
+
+    blender --background xbot_template.blend \
+        --python src/features/blender_conversion/blender_single.py -- \
+        --input data/source/cmu-mocap/data/001/01_01.bvh \
+        --glb data/assets/previews/cmu_01_01.glb
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
 import subprocess
+import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+SOURCE_ROOT = Path(__file__).resolve().parents[2]
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+CMU_DATA_ROOT = REPOSITORY_ROOT / "data/source/cmu-mocap/data"
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
+
+from core.files import sha256_file  # noqa: E402
 
 import bpy
 
-repo_root = Path(__file__).resolve().parents[3]
-bvh_path = repo_root / "data/source/cmu-mocap/data/001/01_01.bvh"
-export_path = repo_root / "data/assets/previews/cmu_01_01_test.glb"
-gltfpack_enabled = True
-gltfpack_path = "gltfpack"
-gltfpack_args = ["-kn", "-cc"]
-source_frame_rate = 120.0
-export_frame_rate = 30.0
+DEFAULT_SOURCE_FRAME_RATE = 120.0
+DEFAULT_EXPORT_FRAME_RATE = 30.0
+DEFAULT_TARGET_RIG_NAME = "Armature"
+DEFAULT_CONVERSION_VERSION = "xbot-retarget-v1"
+DEFAULT_ROTATE_MODE = "NATIVE"
+DEFAULT_AXIS_FORWARD = "-Z"
+DEFAULT_AXIS_UP = "Y"
+DEFAULT_SCALE = 1.0
+DEFAULT_GLTFPACK_ARGS = ["-kn", "-cc"]
 
-target_rig_name = "Armature"
-source_rig_name = "01_01"
+IGNORED_HAND_BONES = {
+    "LeftFingerBase",
+    "LeftHandIndex1",
+    "LThumb",
+    "RightFingerBase",
+    "RightHandIndex1",
+    "RThumb",
+    "mixamorig:LeftFingerBase",
+    "mixamorig:LeftHandIndex1",
+    "mixamorig:LThumb",
+    "mixamorig:RightFingerBase",
+    "mixamorig:RightHandIndex1",
+    "mixamorig:RThumb",
+}
 
 
-def operator_kwargs(operator, values):
+@dataclass(frozen=True, slots=True)
+class RetargetResult:
+    """Frame and action details from one retargeting run."""
+
+    action: bpy.types.Action
+    source_frame_start: int
+    source_frame_end: int
+    export_frame_start: int
+    export_frame_end: int
+
+
+def blender_script_args() -> list[str]:
+    """Return command-line arguments after Blender's ``--`` separator."""
+    if "--" not in sys.argv:
+        return []
+    return sys.argv[sys.argv.index("--") + 1 :]
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse headless retargeting arguments."""
+    parser = argparse.ArgumentParser(
+        description="Retarget one BVH motion onto the loaded template rig and export GLB."
+    )
+    parser.add_argument("--input", type=Path, required=True, help="Source BVH file.")
+    parser.add_argument("--glb", type=Path, required=True, help="Output animation GLB file.")
+    parser.add_argument(
+        "--metadata",
+        type=Path,
+        help="Optional JSON metadata output for the generated asset.",
+    )
+    parser.add_argument(
+        "--source-id",
+        help="Canonical motion source ID. Defaults to deriving from CMU BVH filename.",
+    )
+    parser.add_argument(
+        "--source-relative-path",
+        help="Canonical source BVH path, relative to the CMU data root.",
+    )
+    parser.add_argument(
+        "--source-object-key",
+        help="Optional uploaded source BVH object key.",
+    )
+    parser.add_argument(
+        "--glb-object-key",
+        help="Uploaded GLB object key. Defaults to a deterministic key from source_id.",
+    )
+    parser.add_argument(
+        "--thumbnail-object-key",
+        help="Optional uploaded thumbnail object key.",
+    )
+    parser.add_argument(
+        "--conversion-version",
+        default=DEFAULT_CONVERSION_VERSION,
+        help=f"Stable conversion version (default: {DEFAULT_CONVERSION_VERSION}).",
+    )
+    parser.add_argument(
+        "--target-rig-name",
+        default=DEFAULT_TARGET_RIG_NAME,
+        help=f"Template target armature name (default: {DEFAULT_TARGET_RIG_NAME}).",
+    )
+    parser.add_argument(
+        "--source-frame-rate",
+        type=float,
+        default=DEFAULT_SOURCE_FRAME_RATE,
+        help=f"BVH source frame rate (default: {DEFAULT_SOURCE_FRAME_RATE}).",
+    )
+    parser.add_argument(
+        "--export-frame-rate",
+        type=float,
+        default=DEFAULT_EXPORT_FRAME_RATE,
+        help=f"Export frame rate after retiming (default: {DEFAULT_EXPORT_FRAME_RATE}).",
+    )
+    parser.add_argument(
+        "--scale",
+        type=float,
+        default=DEFAULT_SCALE,
+        help=f"BVH import scale (default: {DEFAULT_SCALE}).",
+    )
+    parser.add_argument(
+        "--axis-forward",
+        default=DEFAULT_AXIS_FORWARD,
+        help=f"BVH import forward axis (default: {DEFAULT_AXIS_FORWARD}).",
+    )
+    parser.add_argument(
+        "--axis-up",
+        default=DEFAULT_AXIS_UP,
+        help=f"BVH import up axis (default: {DEFAULT_AXIS_UP}).",
+    )
+    parser.add_argument(
+        "--rotate-mode",
+        default=DEFAULT_ROTATE_MODE,
+        help=f"BVH import rotation mode (default: {DEFAULT_ROTATE_MODE}).",
+    )
+    parser.add_argument(
+        "--rokoko-addon",
+        help="Optional Rokoko add-on module name to enable before retargeting.",
+    )
+    parser.add_argument(
+        "--no-gltfpack",
+        action="store_true",
+        help="Skip gltfpack optimization and write Blender's GLB directly.",
+    )
+    parser.add_argument(
+        "--gltfpack-path",
+        default="gltfpack",
+        help="gltfpack executable path (default: gltfpack).",
+    )
+    parser.add_argument(
+        "--gltfpack-arg",
+        action="append",
+        default=[],
+        help="Extra gltfpack argument. Can be passed more than once.",
+    )
+    parser.add_argument(
+        "--raw-glb",
+        type=Path,
+        help="Raw Blender GLB output path when gltfpack is enabled.",
+    )
+    parser.add_argument(
+        "--keep-raw-glb",
+        action="store_true",
+        help="Keep the raw Blender GLB after successful gltfpack optimization.",
+    )
+    args = parser.parse_args(blender_script_args())
+    args.input = args.input.resolve()
+    args.glb = args.glb.resolve()
+    if args.metadata is not None:
+        args.metadata = args.metadata.resolve()
+    if args.raw_glb is not None:
+        args.raw_glb = args.raw_glb.resolve()
+    return args
+
+
+def operator_kwargs(operator: Any, values: dict[str, Any]) -> dict[str, Any]:
+    """Filter keyword arguments to properties supported by a Blender operator."""
     supported = {prop.identifier for prop in operator.get_rna_type().properties}
     return {key: value for key, value in values.items() if key in supported}
 
 
-def export_animation_glb(path, armature):
+def enable_addon(module: str) -> None:
+    """Enable a Blender add-on if this Blender build exposes it."""
+    try:
+        bpy.ops.preferences.addon_enable(module=module)
+    except Exception:
+        return
+
+
+def import_bvh(args: argparse.Namespace) -> bpy.types.Object:
+    """Import a BVH file and return the newly created source armature."""
+    before = set(bpy.data.objects)
+    kwargs = operator_kwargs(
+        bpy.ops.import_anim.bvh,
+        {
+            "filepath": str(args.input),
+            "global_scale": args.scale,
+            "axis_forward": args.axis_forward,
+            "axis_up": args.axis_up,
+            "rotate_mode": args.rotate_mode,
+            "update_scene_fps": False,
+            "update_scene_duration": False,
+            "use_fps_scale": False,
+        },
+    )
+    result = bpy.ops.import_anim.bvh(**kwargs)
+    if "FINISHED" not in result:
+        raise RuntimeError(f"BVH import failed: {sorted(result)}")
+
+    imported = [object_ for object_ in bpy.data.objects if object_ not in before]
+    armatures = [object_ for object_ in imported if object_.type == "ARMATURE"]
+    if not armatures:
+        raise RuntimeError("BVH import did not create an armature")
+    if len(armatures) > 1:
+        names = ", ".join(object_.name for object_ in armatures)
+        raise RuntimeError(f"BVH import created multiple armatures: {names}")
+
+    source = armatures[0]
+    if source.animation_data is None or source.animation_data.action is None:
+        raise RuntimeError("Imported BVH armature has no animation action")
+    return source
+
+
+def target_armature(name: str) -> bpy.types.Object:
+    """Return the loaded template target armature."""
+    target = bpy.data.objects.get(name)
+    if target is None:
+        raise RuntimeError(
+            f"Target armature not found: {name}. "
+            "Load the X Bot template .blend before running this script."
+        )
+    if target.type != "ARMATURE":
+        raise RuntimeError(f"Target object is not an armature: {name}")
+    return target
+
+
+def export_animation_glb(path: Path, armature: bpy.types.Object) -> None:
+    """Export the selected retargeted armature animation to GLB."""
+    path.parent.mkdir(parents=True, exist_ok=True)
     bpy.ops.object.select_all(action="DESELECT")
     armature.select_set(True)
     bpy.context.view_layer.objects.active = armature
@@ -53,14 +282,77 @@ def export_animation_glb(path, armature):
         raise RuntimeError(f"GLB export failed: {sorted(result)}")
 
 
-def raw_glb_path(path):
-    path = Path(path)
-    return path.with_name(f"{path.stem}.raw{path.suffix}")
+def raw_glb_path(args: argparse.Namespace) -> Path:
+    """Return the raw Blender export path for optional gltfpack optimization."""
+    if args.raw_glb is not None:
+        return args.raw_glb
+    return args.glb.with_name(f"{args.glb.stem}.raw{args.glb.suffix}")
 
 
-def retime_action(action, source_fps, target_fps, frame_start):
+def source_id_from_filename(path: Path) -> str:
+    """Derive the canonical CMU source ID from a BVH filename."""
+    parts = path.stem.split("_", maxsplit=1)
+    if len(parts) != 2 or not all(part.isdigit() for part in parts):
+        raise ValueError(f"Cannot derive source_id from filename: {path.name}")
+    return f"cmu:{parts[0]}:{parts[1]}"
+
+
+def relative_path_or_none(path: Path, root: Path) -> str | None:
+    """Return a POSIX relative path when path is under root."""
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return None
+
+
+def source_relative_path(args: argparse.Namespace) -> str | None:
+    """Return the source BVH path used by catalog metadata."""
+    if args.source_relative_path:
+        return args.source_relative_path.replace("\\", "/")
+    return (
+        relative_path_or_none(args.input, CMU_DATA_ROOT)
+        or relative_path_or_none(args.input, REPOSITORY_ROOT)
+    )
+
+
+def asset_slug(source_id: str) -> str:
+    """Return the deterministic asset slug for one source ID."""
+    return source_id.replace(":", "_")
+
+
+def default_source_object_key(source_id: str, source_path: Path) -> str:
+    """Return the deterministic source BVH object key."""
+    return f"cmu/source/{asset_slug(source_id)}{source_path.suffix.lower()}"
+
+
+def default_glb_object_key(source_id: str) -> str:
+    """Return the deterministic GLB preview object key."""
+    return f"cmu/previews/{asset_slug(source_id)}.glb"
+
+
+def frame_count(frame_start: int, frame_end: int) -> int:
+    """Return inclusive frame count."""
+    return max(0, frame_end - frame_start + 1)
+
+
+def duration_seconds(frame_start: int, frame_end: int, frame_rate: float) -> float | None:
+    """Return animation duration in seconds for an inclusive frame range."""
+    if frame_rate <= 0:
+        return None
+    return frame_count(frame_start, frame_end) / frame_rate
+
+
+def retime_action(
+    action: bpy.types.Action,
+    source_fps: float,
+    target_fps: float,
+    frame_start: int,
+) -> None:
+    """Scale keyframes to the export FPS while preserving animation duration."""
     if target_fps <= 0:
-        raise ValueError("target_fps must be positive")
+        raise ValueError("--export-frame-rate must be positive")
+    if source_fps <= 0:
+        raise ValueError("--source-frame-rate must be positive")
 
     fcurves = action_fcurves(action)
     if not fcurves:
@@ -74,9 +366,10 @@ def retime_action(action, source_fps, target_fps, frame_start):
         fcurve.update()
 
 
-def action_fcurves(action):
-    fcurves = []
-    seen = set()
+def action_fcurves(action: Any) -> list[Any]:
+    """Return F-curves from legacy or layered Blender action data."""
+    fcurves: list[Any] = []
+    seen: set[int] = set()
     stack = [action]
 
     while stack:
@@ -100,21 +393,24 @@ def action_fcurves(action):
     return fcurves
 
 
-def optional_attr(value, name):
+def optional_attr(value: Any, name: str) -> Any | None:
+    """Read a Blender RNA attribute if it exists."""
     try:
         return getattr(value, name)
     except (AttributeError, TypeError, RuntimeError):
         return None
 
 
-def iterable_values(value):
+def iterable_values(value: Any) -> list[Any]:
+    """Return a list for Blender RNA collections and skip scalar values."""
     try:
         return list(value)
     except TypeError:
         return []
 
 
-def value_pointer(value):
+def value_pointer(value: Any) -> int:
+    """Return a stable-ish identity for Blender RNA values."""
     as_pointer = optional_attr(value, "as_pointer")
     if callable(as_pointer):
         try:
@@ -124,7 +420,15 @@ def value_pointer(value):
     return id(value)
 
 
-def run_gltfpack(executable, input_path, output_path, extra_args):
+def run_gltfpack(
+    *,
+    executable: str,
+    input_path: Path,
+    output_path: Path,
+    extra_args: list[str],
+) -> list[str]:
+    """Optimize a GLB with gltfpack and return the command."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     command = [
         executable,
         "-i",
@@ -146,41 +450,11 @@ def run_gltfpack(executable, input_path, output_path, extra_args):
     if result.returncode != 0:
         output = "\n".join(part for part in (result.stdout, result.stderr) if part)
         raise RuntimeError(f"gltfpack failed with exit code {result.returncode}\n{output}")
+    return command
 
 
-bpy.ops.import_anim.bvh(filepath=str(bvh_path))
-
-source = bpy.data.objects[source_rig_name]
-target = bpy.data.objects[target_rig_name]
-source_action = source.animation_data.action
-bpy.context.scene.frame_start = int(source_action.frame_range[0])
-bpy.context.scene.frame_end = int(source_action.frame_range[1])
-bpy.context.scene.render.fps = int(round(source_frame_rate))
-
-bpy.context.scene.rsl_retargeting_armature_source = source
-bpy.context.scene.rsl_retargeting_armature_target = target
-
-# Use the currently posed rigs as Rokoko's reference pose.
-bpy.context.scene.rsl_retargeting_use_pose = 'CURRENT'
-
-bpy.ops.rsl.build_bone_list()
-
-ignored_hand_bones = {
-    "LeftFingerBase",
-    "LeftHandIndex1",
-    "LThumb",
-    "RightFingerBase",
-    "RightHandIndex1",
-    "RThumb",
-    "mixamorig:LeftFingerBase",
-    "mixamorig:LeftHandIndex1",
-    "mixamorig:LThumb",
-    "mixamorig:RightFingerBase",
-    "mixamorig:RightHandIndex1",
-    "mixamorig:RThumb",
-}
-
-def has_ignored_hand_bone(item):
+def has_ignored_hand_bone(item: Any) -> bool:
+    """Return true when a Rokoko bone-list item maps an unsupported hand bone."""
     for prop in item.bl_rna.properties:
         if prop.identifier == "rna_type":
             continue
@@ -188,51 +462,203 @@ def has_ignored_hand_bone(item):
             value = getattr(item, prop.identifier)
         except AttributeError:
             continue
-        if isinstance(value, str) and value in ignored_hand_bones:
+        if isinstance(value, str) and value in IGNORED_HAND_BONES:
             return True
     return False
 
 
-bone_list = bpy.context.scene.rsl_retargeting_bone_list
-for index in range(len(bone_list) - 1, -1, -1):
-    if has_ignored_hand_bone(bone_list[index]):
-        bone_list.remove(index)
+def remove_ignored_hand_bones() -> None:
+    """Remove hand mappings known to fail for the CMU-to-X-Bot retarget."""
+    bone_list = bpy.context.scene.rsl_retargeting_bone_list
+    for index in range(len(bone_list) - 1, -1, -1):
+        if has_ignored_hand_bone(bone_list[index]):
+            bone_list.remove(index)
 
-bpy.ops.rsl.retarget_animation()
 
-if target.animation_data is None or target.animation_data.action is None:
-    raise RuntimeError("Target armature has no retargeted action")
-target_action = target.animation_data.action
-ratio = export_frame_rate / source_frame_rate
-frame_start = bpy.context.scene.frame_start
-bpy.context.scene.frame_end = max(
-    frame_start,
-    int(round(frame_start + ((bpy.context.scene.frame_end - frame_start) * ratio))),
-)
-bpy.context.scene.render.fps = int(round(export_frame_rate))
-retime_action(
-    target_action,
-    source_fps=source_frame_rate,
-    target_fps=export_frame_rate,
-    frame_start=frame_start,
-)
+def retarget_animation(
+    *,
+    source: bpy.types.Object,
+    target: bpy.types.Object,
+    source_frame_rate: float,
+    export_frame_rate: float,
+) -> RetargetResult:
+    """Retarget the source BVH action onto the loaded template target rig."""
+    source_action = source.animation_data.action
+    scene = bpy.context.scene
+    scene.frame_start = int(source_action.frame_range[0])
+    scene.frame_end = int(source_action.frame_range[1])
+    source_frame_start = scene.frame_start
+    source_frame_end = scene.frame_end
+    scene.render.fps = int(round(source_frame_rate))
 
-bpy.data.objects.remove(source, do_unlink=True)
-for action in list(bpy.data.actions):
-    if action != target_action:
-        bpy.data.actions.remove(action)
+    scene.rsl_retargeting_armature_source = source
+    scene.rsl_retargeting_armature_target = target
 
-if gltfpack_enabled:
-    raw_export_path = raw_glb_path(export_path)
-    export_animation_glb(str(raw_export_path), target)
-    run_gltfpack(
-        executable=gltfpack_path,
-        input_path=raw_export_path,
-        output_path=export_path,
-        extra_args=gltfpack_args,
+    # Use the template pose and imported BVH pose as Rokoko's reference pose.
+    scene.rsl_retargeting_use_pose = "CURRENT"
+
+    result = bpy.ops.rsl.build_bone_list()
+    if "FINISHED" not in result:
+        raise RuntimeError(f"Rokoko bone-list build failed: {sorted(result)}")
+
+    remove_ignored_hand_bones()
+
+    result = bpy.ops.rsl.retarget_animation()
+    if "FINISHED" not in result:
+        raise RuntimeError(f"Rokoko retarget failed: {sorted(result)}")
+
+    if target.animation_data is None or target.animation_data.action is None:
+        raise RuntimeError("Target armature has no retargeted action")
+
+    target_action = target.animation_data.action
+    ratio = export_frame_rate / source_frame_rate
+    frame_start = scene.frame_start
+    scene.frame_end = max(
+        frame_start,
+        int(round(frame_start + ((scene.frame_end - frame_start) * ratio))),
     )
-    raw_export_path.unlink(missing_ok=True)
-else:
-    export_animation_glb(export_path, target)
+    scene.render.fps = int(round(export_frame_rate))
+    retime_action(
+        target_action,
+        source_fps=source_frame_rate,
+        target_fps=export_frame_rate,
+        frame_start=frame_start,
+    )
+    return RetargetResult(
+        action=target_action,
+        source_frame_start=source_frame_start,
+        source_frame_end=source_frame_end,
+        export_frame_start=frame_start,
+        export_frame_end=scene.frame_end,
+    )
 
-print(f"SUCCESS: Exported {export_path}")
+
+def remove_source_data(source: bpy.types.Object, target_action: bpy.types.Action) -> None:
+    """Remove imported source data so only the target action is exported."""
+    bpy.data.objects.remove(source, do_unlink=True)
+    for action in list(bpy.data.actions):
+        if action != target_action:
+            bpy.data.actions.remove(action)
+
+
+def write_metadata(
+    path: Path,
+    args: argparse.Namespace,
+    result: RetargetResult,
+    *,
+    source_name: str,
+    target: bpy.types.Object,
+    raw_glb: Path | None = None,
+) -> None:
+    """Write asset metadata suitable for a later motion_assets import."""
+    source_id = args.source_id or source_id_from_filename(args.input)
+    gltfpack_args = [*DEFAULT_GLTFPACK_ARGS, *args.gltfpack_arg]
+    metadata = {
+        "source_id": source_id,
+        "conversion_status": "converted",
+        "conversion_version": args.conversion_version,
+        "error_message": None,
+        "source_sha256": sha256_file(args.input),
+        "source_relative_path": source_relative_path(args),
+        "source_object_key": args.source_object_key
+        or default_source_object_key(source_id, args.input),
+        "glb_relative_path": relative_path_or_none(args.glb, REPOSITORY_ROOT),
+        "raw_glb_relative_path": (
+            relative_path_or_none(raw_glb, REPOSITORY_ROOT)
+            if raw_glb is not None and raw_glb.exists()
+            else None
+        ),
+        "glb_object_key": args.glb_object_key or default_glb_object_key(source_id),
+        "thumbnail_object_key": args.thumbnail_object_key,
+        "glb_sha256": sha256_file(args.glb),
+        "raw_glb_sha256": sha256_file(raw_glb) if raw_glb and raw_glb.exists() else None,
+        "thumbnail_sha256": None,
+        "glb_size_bytes": args.glb.stat().st_size,
+        "raw_glb_size_bytes": raw_glb.stat().st_size if raw_glb and raw_glb.exists() else None,
+        "thumbnail_size_bytes": None,
+        "source_frame_start": result.source_frame_start,
+        "source_frame_end": result.source_frame_end,
+        "source_frame_count": frame_count(result.source_frame_start, result.source_frame_end),
+        "source_frame_rate": args.source_frame_rate,
+        "source_duration_seconds": duration_seconds(
+            result.source_frame_start,
+            result.source_frame_end,
+            args.source_frame_rate,
+        ),
+        "export_frame_start": result.export_frame_start,
+        "export_frame_end": result.export_frame_end,
+        "export_frame_count": frame_count(result.export_frame_start, result.export_frame_end),
+        "export_frame_rate": args.export_frame_rate,
+        "export_duration_seconds": duration_seconds(
+            result.export_frame_start,
+            result.export_frame_end,
+            args.export_frame_rate,
+        ),
+        "retargeted": True,
+        "source_rig": source_name,
+        "target_rig": "mixamo_xbot",
+        "target_rig_name": target.name,
+        "target_action_name": result.action.name,
+        "scale": args.scale,
+        "axis_forward": args.axis_forward,
+        "axis_up": args.axis_up,
+        "rotate_mode": args.rotate_mode,
+        "gltfpack": not args.no_gltfpack,
+        "gltfpack_args": gltfpack_args if not args.no_gltfpack else [],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+
+
+def main() -> None:
+    """Run one headless BVH retarget and export."""
+    args = parse_args()
+    if not args.input.is_file():
+        raise FileNotFoundError(f"BVH file does not exist: {args.input}")
+
+    enable_addon("io_anim_bvh")
+    enable_addon("io_scene_gltf2")
+    if args.rokoko_addon:
+        enable_addon(args.rokoko_addon)
+
+    source = import_bvh(args)
+    target = target_armature(args.target_rig_name)
+    source_name = source.name
+    result = retarget_animation(
+        source=source,
+        target=target,
+        source_frame_rate=args.source_frame_rate,
+        export_frame_rate=args.export_frame_rate,
+    )
+    remove_source_data(source, result.action)
+
+    raw_export_path = None
+    if args.no_gltfpack:
+        export_animation_glb(args.glb, target)
+    else:
+        raw_export_path = raw_glb_path(args)
+        export_animation_glb(raw_export_path, target)
+        run_gltfpack(
+            executable=args.gltfpack_path,
+            input_path=raw_export_path,
+            output_path=args.glb,
+            extra_args=[*DEFAULT_GLTFPACK_ARGS, *args.gltfpack_arg],
+        )
+        if not args.keep_raw_glb:
+            raw_export_path.unlink(missing_ok=True)
+
+    if args.metadata:
+        write_metadata(
+            args.metadata,
+            args,
+            result,
+            source_name=source_name,
+            target=target,
+            raw_glb=raw_export_path,
+        )
+
+    print(f"SUCCESS: Exported {args.glb}")
+
+
+if __name__ == "__main__":
+    main()

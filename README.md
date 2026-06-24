@@ -60,6 +60,28 @@ python -m features.bvh_metadata
 python -m features.motion_manifest
 ```
 
+## Skeleton preview
+
+The skeleton preview is a static Three.js viewer for exported GLB animations.
+Run a local static server from the repository root:
+
+```powershell
+python -m http.server 8000
+```
+
+Then open:
+
+```text
+http://localhost:8000/src/features/skeleton_preview/glb_skeleton_viewer.html
+```
+
+The viewer loads paths relative to the repository server. For example:
+
+```text
+/data/assets/previews/cmu_01_01.glb
+/data/assets/humanoid/cmu_humanoid.glb
+```
+
 ## Blender retargeting
 
 The CMU BVH files use a consistent source skeleton across the dataset. Retargeting
@@ -100,11 +122,20 @@ exports an armature-only GLB with one animation
 The scene FPS is set to 120 to preserve CMU BVH timing. If this is left at
 Blender's default FPS, exported animations play in slow motion.
 
-Run the script from a Blender scene that already contains the posed X Bot
-template, or later from headless Blender with a template `.blend`:
+Run the script from headless Blender with a template `.blend` that already
+contains the posed X Bot target rig:
 
 ```powershell
-blender --background xbot_template.blend --python src\features\blender_conversion\blender_single.py
+blender --background data\assets\templates\xbot_template.blend --python src\features\blender_conversion\blender_single.py -- --input data\source\cmu-mocap\data\001\01_01.bvh --glb data\assets\previews\cmu_01_01.glb --metadata data\assets\previews\cmu_01_01.json
+```
+
+Pass `--no-gltfpack` to skip GLB optimization, or pass `--gltfpack-path` when
+`gltfpack.exe` is not on `PATH`.
+
+To process the first 10 valid BVH records in one headless Blender process:
+
+```powershell
+blender --background data\assets\templates\xbot_template.blend --python src\features\blender_conversion\blender_batch.py -- --limit 10 --no-gltfpack
 ```
 
 ## Import into PostgreSQL

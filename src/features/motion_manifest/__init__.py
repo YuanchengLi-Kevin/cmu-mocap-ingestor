@@ -5,13 +5,12 @@
 
 from __future__ import annotations
 
-import json
-import os
 import re
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from core.json_io import read_json_object_array, write_json_array_atomic
 
 
 FILENAME_PATTERN = re.compile(r"^(\d+)_(\d+)\.bvh$")
@@ -47,20 +46,6 @@ class JoinSummary:
     matched: int
     unmatched_bvh: int
     omitted_index: int
-
-
-def _read_json_array(path: Path) -> list[dict[str, Any]]:
-    """Read a JSON array whose elements must all be objects."""
-    try:
-        value = json.loads(path.read_text(encoding="utf-8-sig"))
-    except json.JSONDecodeError as error:
-        raise ValueError(f"Invalid JSON in {path}: {error}") from error
-
-    if not isinstance(value, list):
-        raise ValueError(f"Expected a JSON array in {path}")
-    if not all(isinstance(record, dict) for record in value):
-        raise ValueError(f"Every record in {path} must be a JSON object")
-    return value
 
 
 def _require_fields(record: dict[str, Any], fields: tuple[str, ...], source: Path) -> None:
@@ -177,44 +162,19 @@ def join_records(
     return joined, summary
 
 
-def _write_json_array_atomic(records: list[dict[str, Any]], output_path: Path) -> None:
-    """Write a JSON array and atomically replace the destination."""
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=output_path.parent,
-            prefix=f".{output_path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as temporary_file:
-            temporary_path = Path(temporary_file.name)
-            json.dump(records, temporary_file, ensure_ascii=False, indent=2)
-            temporary_file.write("\n")
-            temporary_file.flush()
-            os.fsync(temporary_file.fileno())
-        os.replace(temporary_path, output_path)
-    except Exception:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
-        raise
-
-
 def build_joined_manifest(
     motion_index_path: Path,
     bvh_metadata_path: Path,
     output_path: Path,
 ) -> JoinSummary:
     """Join source manifests, atomically write the result, and return counts."""
-    motion_index_records = _read_json_array(motion_index_path)
-    bvh_metadata_records = _read_json_array(bvh_metadata_path)
+    motion_index_records = read_json_object_array(motion_index_path)
+    bvh_metadata_records = read_json_object_array(bvh_metadata_path)
     joined, summary = join_records(
         motion_index_records,
         bvh_metadata_records,
         motion_index_source=motion_index_path,
         bvh_metadata_source=bvh_metadata_path,
     )
-    _write_json_array_atomic(joined, output_path)
+    write_json_array_atomic(output_path, joined)
     return summary

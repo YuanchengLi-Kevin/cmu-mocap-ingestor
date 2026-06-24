@@ -5,10 +5,11 @@
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 from typing import Any
+
+from core.json_io import write_json_array
 
 
 SUBJECT_PATTERN = re.compile(r"^Subject #(\d+) \((.+)\)$")
@@ -69,9 +70,5 @@ def parse_index(index_path: Path) -> list[dict[str, Any]]:
 def write_motion_index_manifest(index_path: Path, output_path: Path) -> int:
     """Parse a CMU index, write its JSON manifest, and return the record count."""
     records = parse_index(index_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        json.dumps(records, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    write_json_array(output_path, records)
     return len(records)

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from cmu_mocap_ingestor.manifest import build_joined_manifest, join_records
+from features.motion_manifest import build_joined_manifest, join_records
 
 
 def index_record(filename: str = "01_01.bvh") -> dict[str, object]:

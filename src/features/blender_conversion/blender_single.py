@@ -6,7 +6,7 @@ from pathlib import Path
 
 import bpy
 
-repo_root = Path(__file__).resolve().parents[1]
+repo_root = Path(__file__).resolve().parents[3]
 bvh_path = repo_root / "data/source/cmu-mocap/data/001/01_01.bvh"
 export_path = repo_root / "data/assets/previews/cmu_01_01_test.glb"
 gltfpack_enabled = True

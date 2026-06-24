@@ -1,17 +1,17 @@
 # Copyright (c) 2026 Yuancheng Li
 # SPDX-License-Identifier: Apache-2.0
 
-"""Generate a JSON animation manifest from the CMU motion index."""
+"""CLI entrypoint for parsing the CMU motion index."""
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 
-from cmu_mocap_ingestor.motion_index import write_motion_index_manifest
+from features.motion_index import write_motion_index_manifest
 
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_INPUT = REPOSITORY_ROOT / "data/source/cmu-mocap/cmu-mocap-index-text.txt"
 DEFAULT_OUTPUT = REPOSITORY_ROOT / "data/manifests/motion_index.json"
 

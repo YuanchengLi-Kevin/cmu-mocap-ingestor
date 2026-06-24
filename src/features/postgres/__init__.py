@@ -5,11 +5,12 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 import psycopg
+
+from core.json_io import read_json_object_array
 
 
 MOTION_FIELDS = (
@@ -93,18 +94,9 @@ ON CONFLICT (source_id) DO UPDATE SET
 
 def _read_motion_manifest(path: Path) -> list[dict[str, Any]]:
     """Read and validate the joined manifest shape."""
-    try:
-        value = json.loads(path.read_text(encoding="utf-8-sig"))
-    except json.JSONDecodeError as error:
-        raise ValueError(f"Invalid JSON in {path}: {error}") from error
-
-    if not isinstance(value, list):
-        raise ValueError(f"Expected a JSON array in {path}")
-
+    value = read_json_object_array(path)
     records: list[dict[str, Any]] = []
     for record in value:
-        if not isinstance(record, dict):
-            raise ValueError(f"Every record in {path} must be a JSON object")
         missing = [field for field in MOTION_FIELDS if field not in record]
         if missing:
             raise ValueError(f"Record in {path} is missing fields: {', '.join(missing)}")

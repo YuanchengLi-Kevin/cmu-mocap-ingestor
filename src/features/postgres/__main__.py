@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Yuancheng Li
 # SPDX-License-Identifier: Apache-2.0
 
-"""Import the joined CMU motion manifest into PostgreSQL."""
+"""CLI entrypoint for importing the joined manifest into PostgreSQL."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from cmu_mocap_ingestor.postgres import import_motion_manifest
+from features.postgres import import_motion_manifest
 
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_INPUT = REPOSITORY_ROOT / "data/manifests/motions.json"
 
 

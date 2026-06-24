@@ -1,17 +1,17 @@
 # Copyright (c) 2026 Yuancheng Li
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build the joined CMU motion manifest."""
+"""CLI entrypoint for building the joined motion manifest."""
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 
-from cmu_mocap_ingestor.manifest import build_joined_manifest
+from features.motion_manifest import build_joined_manifest
 
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_MOTION_INDEX = REPOSITORY_ROOT / "data/manifests/motion_index.json"
 DEFAULT_BVH_METADATA = REPOSITORY_ROOT / "data/manifests/bvh_metadata.json"
 DEFAULT_OUTPUT = REPOSITORY_ROOT / "data/manifests/motions.json"

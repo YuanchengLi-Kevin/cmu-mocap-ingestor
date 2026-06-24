@@ -5,11 +5,12 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from pathlib import Path
 from typing import Any
+
+from core.files import sha256_file
+from core.json_io import write_json_array
 
 
 FILENAME_PATTERN = re.compile(r"^(\d+)_(\d+)\.bvh$", re.IGNORECASE)
@@ -20,15 +21,6 @@ FRAMES_PATTERN = re.compile(r"^Frames:\s*(\d+)\s*$")
 FRAME_TIME_PATTERN = re.compile(
     r"^Frame Time:\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*$"
 )
-
-
-def sha256_file(path: Path) -> str:
-    """Return the SHA-256 digest of a file without loading it all into memory."""
-    digest = hashlib.sha256()
-    with path.open("rb") as file_handle:
-        for chunk in iter(lambda: file_handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def parse_bvh(path: Path, input_root: Path) -> dict[str, Any]:
@@ -161,10 +153,6 @@ def build_bvh_metadata(input_root: Path) -> list[dict[str, Any]]:
 def write_bvh_metadata_manifest(input_root: Path, output_path: Path) -> tuple[int, int]:
     """Write the BVH metadata manifest and return total and valid record counts."""
     records = build_bvh_metadata(input_root)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        json.dumps(records, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    write_json_array(output_path, records)
     valid_count = sum(record["validation_status"] == "valid" for record in records)
     return len(records), valid_count

@@ -5,7 +5,7 @@
 
 Run with Blender, not the project Python interpreter:
 
-    blender --background --python scripts/convert_bvh.py -- \
+    blender --background --python src/features/blender_conversion/convert_bvh.py -- \
         --input data/source/cmu-mocap/data/001/01_01.bvh \
         --glb data/assets/previews/cmu_01_01.glb \
         --thumbnail data/assets/thumbnails/cmu_01_01.webp
@@ -14,15 +14,20 @@ Run with Blender, not the project Python interpreter:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
-import bpy
-from mathutils import Vector
+SOURCE_ROOT = Path(__file__).resolve().parents[2]
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
+
+from core.files import sha256_file  # noqa: E402
+
+import bpy  # noqa: E402
+from mathutils import Vector  # noqa: E402
 
 
 DEFAULT_AXIS_FORWARD = "-Z"
@@ -148,15 +153,6 @@ def enable_addon(module: str) -> None:
         bpy.ops.preferences.addon_enable(module=module)
     except Exception:
         return
-
-
-def sha256_file(path: Path) -> str:
-    """Return the SHA-256 digest of a file."""
-    digest = hashlib.sha256()
-    with path.open("rb") as file_handle:
-        for chunk in iter(lambda: file_handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def clear_scene() -> None:

@@ -9,17 +9,17 @@ PostgreSQL.
 ## Repository layout
 
 ```text
-scripts/
-  parse_motion_index.py
-  parse_bvh_metadata.py
-  build_manifest.py
-  import_postgres.py
+src/core/
+  files.py
+  json_io.py
 
-src/cmu_mocap_ingestor/
-  motion_index.py
-  bvh.py
-  manifest.py
-  postgres.py
+src/features/
+  motion_index/
+  bvh_metadata/
+  motion_manifest/
+  postgres/
+  blender_conversion/
+  skeleton_preview/
 
 data/manifests/
   source.json
@@ -28,16 +28,17 @@ data/manifests/
   motions.json
 ```
 
-Scripts coordinate pipeline stages. Reusable parsing, manifest, and database logic
-belongs in `src/cmu_mocap_ingestor/`.
+Feature packages own one pipeline capability each. Shared utilities live in
+`src/core/`. Features may import from `core`, but should not import from each
+other.
 
 ## Pipeline stages
 
 ```text
-parse_motion_index.py  -> data/manifests/motion_index.json
-parse_bvh_metadata.py  -> data/manifests/bvh_metadata.json
-build_manifest.py      -> data/manifests/motions.json
-import_postgres.py     -> PostgreSQL rows
+python -m features.motion_index     -> data/manifests/motion_index.json
+python -m features.bvh_metadata     -> data/manifests/bvh_metadata.json
+python -m features.motion_manifest  -> data/manifests/motions.json
+python -m features.postgres         -> PostgreSQL rows
 ```
 
 The joined manifest uses every BVH as its base. BVHs without motion-index entries
@@ -54,9 +55,9 @@ python -m pip install -e .[dev]
 ## Run the pipeline
 
 ```powershell
-python .\scripts\parse_motion_index.py
-python .\scripts\parse_bvh_metadata.py
-python .\scripts\build_manifest.py
+python -m features.motion_index
+python -m features.bvh_metadata
+python -m features.motion_manifest
 ```
 
 ## Blender retargeting
@@ -82,7 +83,8 @@ Bot GLB once, then loads each animation GLB and applies its animation clip to th
 already loaded X Bot scene. For this to work, every exported animation clip must
 target the same Mixamo bone names as `xbot.glb`.
 
-The current Blender/Rokoko proof-of-concept is `scripts/blender_single.py`. It:
+The current Blender/Rokoko proof-of-concept is
+`src/features/blender_conversion/blender_single.py`. It:
 
 ```text
 imports one CMU BVH
@@ -102,7 +104,7 @@ Run the script from a Blender scene that already contains the posed X Bot
 template, or later from headless Blender with a template `.blend`:
 
 ```powershell
-blender --background xbot_template.blend --python scripts\blender_single.py
+blender --background xbot_template.blend --python src\features\blender_conversion\blender_single.py
 ```
 
 ## Import into PostgreSQL
@@ -116,40 +118,11 @@ DATABASE_URL=postgresql://username:password@localhost:5432/database_name
 Then run:
 
 ```powershell
-python .\scripts\import_postgres.py
+python -m features.postgres
 ```
 
 The importer creates `public.motions` if necessary and upserts every record by
 `source_id`.
-
-## Development pattern
-
-Keep scripts thin. For example, `scripts/parse_bvh_metadata.py` should only
-coordinate paths, call package code, and report results:
-
-```python
-from pathlib import Path
-
-from cmu_mocap_ingestor.bvh import write_bvh_metadata_manifest
-
-
-def main() -> None:
-    input_directory = Path("data/source/cmu-mocap/data")
-    output_path = Path("data/manifests/bvh_metadata.json")
-
-    count, valid_count = write_bvh_metadata_manifest(
-        input_root=input_directory,
-        output_path=output_path,
-    )
-
-    print(f"Processed {count} BVH files ({valid_count} valid)")
-
-
-if __name__ == "__main__":
-    main()
-```
-
-The actual parsing belongs in `src/cmu_mocap_ingestor/bvh.py`.
 
 ## Manifest records
 

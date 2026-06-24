@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from cmu_mocap_ingestor import postgres
+from features import postgres
 
 
 def motion_record() -> dict[str, object]:

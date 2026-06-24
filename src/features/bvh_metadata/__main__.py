@@ -1,17 +1,17 @@
 # Copyright (c) 2026 Yuancheng Li
 # SPDX-License-Identifier: Apache-2.0
 
-"""Extract structural and motion metadata from CMU BVH files."""
+"""CLI entrypoint for extracting BVH metadata."""
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 
-from cmu_mocap_ingestor.bvh import write_bvh_metadata_manifest
+from features.bvh_metadata import write_bvh_metadata_manifest
 
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_INPUT = REPOSITORY_ROOT / "data/source/cmu-mocap/data"
 DEFAULT_OUTPUT = REPOSITORY_ROOT / "data/manifests/bvh_metadata.json"
 

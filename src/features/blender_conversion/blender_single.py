@@ -8,7 +8,8 @@ Run with Blender, not the project Python interpreter:
     blender --background xbot_template.blend \
         --python src/features/blender_conversion/blender_single.py -- \
         --input data/source/cmu-mocap/data/001/01_01.bvh \
-        --glb data/assets/previews/cmu_01_01.glb
+        --glb data/assets/previews/cmu_01_01.glb \
+        --in-place-glb data/assets/previews/cmu_01_01_in_place.glb
 """
 
 from __future__ import annotations
@@ -40,6 +41,13 @@ DEFAULT_AXIS_FORWARD = "-Z"
 DEFAULT_AXIS_UP = "Y"
 DEFAULT_SCALE = 1.0
 DEFAULT_GLTFPACK_ARGS = ["-kn", "-cc"]
+DEFAULT_IN_PLACE_VERTICAL_AXIS = "Y"
+DEFAULT_IN_PLACE_ROOT_BONES = (
+    "mixamorig:Hips",
+    "Hips",
+    "mixamorig:Root",
+    "Root",
+)
 
 IGNORED_HAND_BONES = {
     "LeftFingerBase",
@@ -68,6 +76,16 @@ class RetargetResult:
     export_frame_end: int
 
 
+@dataclass(frozen=True, slots=True)
+class InPlaceResult:
+    """Details for an in-place action derived from a retargeted action."""
+
+    action: bpy.types.Action
+    root_bone: str
+    vertical_axis: str
+    neutralized_location_curves: int
+
+
 def blender_script_args() -> list[str]:
     """Return command-line arguments after Blender's ``--`` separator."""
     if "--" not in sys.argv:
@@ -81,11 +99,28 @@ def parse_args() -> argparse.Namespace:
         description="Retarget one BVH motion onto the loaded template rig and export GLB."
     )
     parser.add_argument("--input", type=Path, required=True, help="Source BVH file.")
-    parser.add_argument("--glb", type=Path, required=True, help="Output animation GLB file.")
+    parser.add_argument(
+        "--glb",
+        type=Path,
+        help="Output normal animation GLB file. Required for --variant normal/both.",
+    )
+    parser.add_argument(
+        "--variant",
+        choices=("normal", "in-place", "both"),
+        help=(
+            "Which GLB variant to export. Defaults to both when --in-place-glb is set, "
+            "otherwise normal."
+        ),
+    )
+    parser.add_argument(
+        "--in-place-glb",
+        type=Path,
+        help="Optional second GLB with horizontal root motion removed.",
+    )
     parser.add_argument(
         "--metadata",
         type=Path,
-        help="Optional JSON metadata output for the generated asset.",
+        help="Optional JSON metadata output for this source motion and its exported variants.",
     )
     parser.add_argument(
         "--source-id",
@@ -102,6 +137,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--glb-object-key",
         help="Uploaded GLB object key. Defaults to a deterministic key from source_id.",
+    )
+    parser.add_argument(
+        "--in-place-glb-object-key",
+        help="Uploaded in-place GLB object key. Defaults to a deterministic key from source_id.",
     )
     parser.add_argument(
         "--thumbnail-object-key",
@@ -130,6 +169,12 @@ def parse_args() -> argparse.Namespace:
         help=f"Export frame rate after retiming (default: {DEFAULT_EXPORT_FRAME_RATE}).",
     )
     parser.add_argument(
+        "--trim-start-frames",
+        type=int,
+        default=1,
+        help="Number of exported frames to skip from the start (default: 1).",
+    )
+    parser.add_argument(
         "--scale",
         type=float,
         default=DEFAULT_SCALE,
@@ -153,6 +198,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--rokoko-addon",
         help="Optional Rokoko add-on module name to enable before retargeting.",
+    )
+    parser.add_argument(
+        "--in-place-root-bone",
+        help="Root bone whose horizontal location curves are flattened for --in-place-glb.",
+    )
+    parser.add_argument(
+        "--in-place-vertical-axis",
+        choices=("X", "Y", "Z"),
+        default=DEFAULT_IN_PLACE_VERTICAL_AXIS,
+        help=(
+            "Root location axis to preserve for --in-place-glb "
+            f"(default: {DEFAULT_IN_PLACE_VERTICAL_AXIS})."
+        ),
     )
     parser.add_argument(
         "--no-gltfpack",
@@ -182,9 +240,35 @@ def parse_args() -> argparse.Namespace:
     )
     args = parser.parse_args(blender_script_args())
     args.input = args.input.resolve()
-    args.glb = args.glb.resolve()
+    if args.glb is not None:
+        args.glb = args.glb.resolve()
+    if args.in_place_glb is not None:
+        args.in_place_glb = args.in_place_glb.resolve()
+    if args.variant is None:
+        if args.glb is not None and args.in_place_glb is not None:
+            args.variant = "both"
+        elif args.in_place_glb is not None:
+            args.variant = "in-place"
+        else:
+            args.variant = "normal"
+    if args.variant in {"normal", "both"} and args.glb is None:
+        parser.error("--variant normal/both requires --glb")
+    if args.variant in {"in-place", "both"} and args.in_place_glb is None:
+        parser.error("--variant in-place/both requires --in-place-glb")
+    if args.variant == "normal" and args.in_place_glb is not None:
+        parser.error("--in-place-glb is only used with --variant in-place or --variant both")
+    if args.trim_start_frames < 0:
+        parser.error("--trim-start-frames must be zero or greater")
     if args.metadata is not None:
         args.metadata = args.metadata.resolve()
+    if args.glb_object_key and args.variant == "in-place":
+        parser.error("--glb-object-key is only used with --variant normal or --variant both")
+    if args.in_place_glb_object_key and args.in_place_glb is None:
+        parser.error("--in-place-glb-object-key requires --in-place-glb")
+    if args.in_place_glb_object_key and args.variant == "normal":
+        parser.error(
+            "--in-place-glb-object-key is only used with --variant in-place or --variant both"
+        )
     if args.raw_glb is not None:
         args.raw_glb = args.raw_glb.resolve()
     return args
@@ -266,7 +350,7 @@ def export_animation_glb(path: Path, armature: bpy.types.Object) -> None:
             "use_selection": True,
             "export_animations": True,
             "export_frame_range": True,
-            "export_force_sampling": True,
+            "export_force_sampling": False,
             "export_optimize_animation_size": True,
             "export_skins": True,
             "export_def_bones": True,
@@ -286,7 +370,12 @@ def raw_glb_path(args: argparse.Namespace) -> Path:
     """Return the raw Blender export path for optional gltfpack optimization."""
     if args.raw_glb is not None:
         return args.raw_glb
-    return args.glb.with_name(f"{args.glb.stem}.raw{args.glb.suffix}")
+    return raw_glb_path_for(args.glb)
+
+
+def raw_glb_path_for(path: Path) -> Path:
+    """Return the default raw Blender export path for one optimized GLB."""
+    return path.with_name(f"{path.stem}.raw{path.suffix}")
 
 
 def source_id_from_filename(path: Path) -> str:
@@ -325,9 +414,10 @@ def default_source_object_key(source_id: str, source_path: Path) -> str:
     return f"cmu/source/{asset_slug(source_id)}{source_path.suffix.lower()}"
 
 
-def default_glb_object_key(source_id: str) -> str:
+def default_glb_object_key(source_id: str, animation_variant: str = "normal") -> str:
     """Return the deterministic GLB preview object key."""
-    return f"cmu/previews/{asset_slug(source_id)}.glb"
+    suffix = "" if animation_variant == "normal" else f"_{animation_variant}"
+    return f"cmu/previews/{asset_slug(source_id)}{suffix}.glb"
 
 
 def frame_count(frame_start: int, frame_end: int) -> int:
@@ -420,6 +510,71 @@ def value_pointer(value: Any) -> int:
     return id(value)
 
 
+def resolve_in_place_root_bone(
+    target: bpy.types.Object,
+    root_bone: str | None,
+) -> str:
+    """Return the target root bone used to remove horizontal root motion."""
+    if root_bone:
+        if root_bone not in target.pose.bones:
+            raise RuntimeError(f"In-place root bone not found on target rig: {root_bone}")
+        return root_bone
+
+    for candidate in DEFAULT_IN_PLACE_ROOT_BONES:
+        if candidate in target.pose.bones:
+            return candidate
+
+    root_bones = [bone.name for bone in target.pose.bones if bone.parent is None]
+    if len(root_bones) == 1:
+        return root_bones[0]
+
+    raise RuntimeError(
+        "Could not auto-detect in-place root bone. "
+        "Pass --in-place-root-bone with the target rig root bone name."
+    )
+
+
+def create_in_place_action(
+    action: bpy.types.Action,
+    target: bpy.types.Object,
+    *,
+    root_bone: str | None,
+    vertical_axis: str,
+) -> InPlaceResult:
+    """Copy an action and flatten horizontal root-bone location curves."""
+    resolved_root_bone = resolve_in_place_root_bone(target, root_bone)
+    vertical_axis = vertical_axis.upper()
+    vertical_index = {"X": 0, "Y": 1, "Z": 2}[vertical_axis]
+    root_location_path = target.pose.bones[resolved_root_bone].path_from_id("location")
+
+    in_place_action = action.copy()
+    in_place_action.name = f"{action.name}_in_place"
+    neutralized = 0
+
+    for fcurve in action_fcurves(in_place_action):
+        if fcurve.data_path not in {root_location_path, "location"}:
+            continue
+        if fcurve.array_index == vertical_index:
+            continue
+        if len(fcurve.keyframe_points) == 0:
+            continue
+
+        value = fcurve.keyframe_points[0].co.y
+        for keyframe in fcurve.keyframe_points:
+            keyframe.co.y = value
+            keyframe.handle_left.y = value
+            keyframe.handle_right.y = value
+        fcurve.update()
+        neutralized += 1
+
+    return InPlaceResult(
+        action=in_place_action,
+        root_bone=resolved_root_bone,
+        vertical_axis=vertical_axis,
+        neutralized_location_curves=neutralized,
+    )
+
+
 def run_gltfpack(
     *,
     executable: str,
@@ -451,6 +606,52 @@ def run_gltfpack(
         output = "\n".join(part for part in (result.stdout, result.stderr) if part)
         raise RuntimeError(f"gltfpack failed with exit code {result.returncode}\n{output}")
     return command
+
+
+def export_frame_start(args: argparse.Namespace, result: RetargetResult) -> int:
+    """Return the first frame included in exported GLB animations."""
+    trim_start_frames = getattr(args, "trim_start_frames", 0)
+    frame_start = result.export_frame_start + trim_start_frames
+    if frame_start > result.export_frame_end:
+        raise ValueError("--trim-start-frames removes every export frame")
+    return frame_start
+
+
+def configure_export_frame_range(args: argparse.Namespace, result: RetargetResult) -> None:
+    """Set Blender's active export frame range."""
+    scene = bpy.context.scene
+    scene.frame_start = export_frame_start(args, result)
+    scene.frame_end = result.export_frame_end
+    scene.frame_set(scene.frame_start)
+
+
+def export_glb_asset(
+    *,
+    args: argparse.Namespace,
+    target: bpy.types.Object,
+    glb_path: Path,
+    result: RetargetResult | None = None,
+    raw_glb: Path | None = None,
+) -> Path | None:
+    """Export one selected animation GLB and optionally optimize it."""
+    if result is not None:
+        configure_export_frame_range(args, result)
+
+    if args.no_gltfpack:
+        export_animation_glb(glb_path, target)
+        return None
+
+    raw_export_path = raw_glb or raw_glb_path_for(glb_path)
+    export_animation_glb(raw_export_path, target)
+    run_gltfpack(
+        executable=args.gltfpack_path,
+        input_path=raw_export_path,
+        output_path=glb_path,
+        extra_args=[*DEFAULT_GLTFPACK_ARGS, *args.gltfpack_arg],
+    )
+    if not args.keep_raw_glb:
+        raw_export_path.unlink(missing_ok=True)
+    return raw_export_path
 
 
 def has_ignored_hand_bone(item: Any) -> bool:
@@ -541,6 +742,13 @@ def remove_source_data(source: bpy.types.Object, target_action: bpy.types.Action
             bpy.data.actions.remove(action)
 
 
+def keep_only_action(action_to_keep: bpy.types.Action) -> None:
+    """Remove other actions so GLB export contains only the selected clip."""
+    for action in list(bpy.data.actions):
+        if action != action_to_keep:
+            bpy.data.actions.remove(action)
+
+
 def write_metadata(
     path: Path,
     args: argparse.Namespace,
@@ -548,11 +756,25 @@ def write_metadata(
     *,
     source_name: str,
     target: bpy.types.Object,
+    variants: dict[str, dict[str, Any]] | None = None,
     raw_glb: Path | None = None,
 ) -> None:
-    """Write asset metadata suitable for a later motion_assets import."""
+    """Write source-level metadata with generated asset variants."""
     source_id = args.source_id or source_id_from_filename(args.input)
     gltfpack_args = [*DEFAULT_GLTFPACK_ARGS, *args.gltfpack_arg]
+    if variants is None:
+        variants = {
+            "normal": variant_metadata(
+                args,
+                result,
+                action=result.action,
+                glb_path=args.glb,
+                glb_object_key=args.glb_object_key,
+                raw_glb=raw_glb,
+                root_motion="preserved",
+            )
+        }
+
     metadata = {
         "source_id": source_id,
         "conversion_status": "converted",
@@ -562,20 +784,6 @@ def write_metadata(
         "source_relative_path": source_relative_path(args),
         "source_object_key": args.source_object_key
         or default_source_object_key(source_id, args.input),
-        "glb_relative_path": relative_path_or_none(args.glb, REPOSITORY_ROOT),
-        "raw_glb_relative_path": (
-            relative_path_or_none(raw_glb, REPOSITORY_ROOT)
-            if raw_glb is not None and raw_glb.exists()
-            else None
-        ),
-        "glb_object_key": args.glb_object_key or default_glb_object_key(source_id),
-        "thumbnail_object_key": args.thumbnail_object_key,
-        "glb_sha256": sha256_file(args.glb),
-        "raw_glb_sha256": sha256_file(raw_glb) if raw_glb and raw_glb.exists() else None,
-        "thumbnail_sha256": None,
-        "glb_size_bytes": args.glb.stat().st_size,
-        "raw_glb_size_bytes": raw_glb.stat().st_size if raw_glb and raw_glb.exists() else None,
-        "thumbnail_size_bytes": None,
         "source_frame_start": result.source_frame_start,
         "source_frame_end": result.source_frame_end,
         "source_frame_count": frame_count(result.source_frame_start, result.source_frame_end),
@@ -585,29 +793,74 @@ def write_metadata(
             result.source_frame_end,
             args.source_frame_rate,
         ),
-        "export_frame_start": result.export_frame_start,
-        "export_frame_end": result.export_frame_end,
-        "export_frame_count": frame_count(result.export_frame_start, result.export_frame_end),
-        "export_frame_rate": args.export_frame_rate,
-        "export_duration_seconds": duration_seconds(
-            result.export_frame_start,
-            result.export_frame_end,
-            args.export_frame_rate,
-        ),
         "retargeted": True,
         "source_rig": source_name,
         "target_rig": "mixamo_xbot",
         "target_rig_name": target.name,
-        "target_action_name": result.action.name,
         "scale": args.scale,
         "axis_forward": args.axis_forward,
         "axis_up": args.axis_up,
         "rotate_mode": args.rotate_mode,
+        "trim_start_frames": getattr(args, "trim_start_frames", 0),
         "gltfpack": not args.no_gltfpack,
         "gltfpack_args": gltfpack_args if not args.no_gltfpack else [],
+        "variants": variants,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+
+
+def variant_metadata(
+    args: argparse.Namespace,
+    result: RetargetResult,
+    *,
+    action: bpy.types.Action,
+    glb_path: Path,
+    root_motion: str,
+    glb_object_key: str | None = None,
+    raw_glb: Path | None = None,
+    in_place_root_bone: str | None = None,
+    in_place_vertical_axis: str | None = None,
+    in_place_neutralized_location_curves: int | None = None,
+) -> dict[str, Any]:
+    """Return metadata for one exported GLB variant."""
+    source_id = args.source_id or source_id_from_filename(args.input)
+    animation_variant = "in_place" if root_motion == "horizontal_removed" else "normal"
+    frame_start = export_frame_start(args, result)
+    return {
+        "animation_variant": animation_variant,
+        "root_motion": root_motion,
+        "glb_relative_path": relative_path_or_none(glb_path, REPOSITORY_ROOT),
+        "raw_glb_relative_path": (
+            relative_path_or_none(raw_glb, REPOSITORY_ROOT)
+            if raw_glb is not None and raw_glb.exists()
+            else None
+        ),
+        "glb_object_key": glb_object_key
+        or default_glb_object_key(source_id, animation_variant),
+        "thumbnail_object_key": (
+            args.thumbnail_object_key if animation_variant == "normal" else None
+        ),
+        "glb_sha256": sha256_file(glb_path),
+        "raw_glb_sha256": sha256_file(raw_glb) if raw_glb and raw_glb.exists() else None,
+        "thumbnail_sha256": None,
+        "glb_size_bytes": glb_path.stat().st_size,
+        "raw_glb_size_bytes": raw_glb.stat().st_size if raw_glb and raw_glb.exists() else None,
+        "thumbnail_size_bytes": None,
+        "export_frame_start": frame_start,
+        "export_frame_end": result.export_frame_end,
+        "export_frame_count": frame_count(frame_start, result.export_frame_end),
+        "export_frame_rate": args.export_frame_rate,
+        "export_duration_seconds": duration_seconds(
+            frame_start,
+            result.export_frame_end,
+            args.export_frame_rate,
+        ),
+        "target_action_name": action.name,
+        "in_place_root_bone": in_place_root_bone,
+        "in_place_vertical_axis": in_place_vertical_axis,
+        "in_place_neutralized_location_curves": in_place_neutralized_location_curves,
+    }
 
 
 def main() -> None:
@@ -632,20 +885,62 @@ def main() -> None:
     )
     remove_source_data(source, result.action)
 
-    raw_export_path = None
-    if args.no_gltfpack:
-        export_animation_glb(args.glb, target)
-    else:
-        raw_export_path = raw_glb_path(args)
-        export_animation_glb(raw_export_path, target)
-        run_gltfpack(
-            executable=args.gltfpack_path,
-            input_path=raw_export_path,
-            output_path=args.glb,
-            extra_args=[*DEFAULT_GLTFPACK_ARGS, *args.gltfpack_arg],
+    metadata_variants: dict[str, dict[str, Any]] = {}
+
+    if args.variant in {"normal", "both"}:
+        target.animation_data.action = result.action
+        raw_export_path = export_glb_asset(
+            args=args,
+            target=target,
+            glb_path=args.glb,
+            result=result,
+            raw_glb=raw_glb_path(args),
         )
-        if not args.keep_raw_glb:
-            raw_export_path.unlink(missing_ok=True)
+
+        if args.metadata:
+            metadata_variants["normal"] = variant_metadata(
+                args,
+                result,
+                action=result.action,
+                glb_path=args.glb,
+                glb_object_key=args.glb_object_key,
+                raw_glb=raw_export_path,
+                root_motion="preserved",
+            )
+
+        print(f"SUCCESS: Exported {args.glb}")
+
+    if args.variant in {"in-place", "both"}:
+        in_place = create_in_place_action(
+            result.action,
+            target,
+            root_bone=args.in_place_root_bone,
+            vertical_axis=args.in_place_vertical_axis,
+        )
+        target.animation_data.action = in_place.action
+        keep_only_action(in_place.action)
+        in_place_raw_export_path = export_glb_asset(
+            args=args,
+            target=target,
+            glb_path=args.in_place_glb,
+            result=result,
+        )
+
+        if args.metadata:
+            metadata_variants["in_place"] = variant_metadata(
+                args,
+                result,
+                action=in_place.action,
+                glb_path=args.in_place_glb,
+                glb_object_key=args.in_place_glb_object_key,
+                raw_glb=in_place_raw_export_path,
+                root_motion="horizontal_removed",
+                in_place_root_bone=in_place.root_bone,
+                in_place_vertical_axis=in_place.vertical_axis,
+                in_place_neutralized_location_curves=in_place.neutralized_location_curves,
+            )
+
+        print(f"SUCCESS: Exported in-place {args.in_place_glb}")
 
     if args.metadata:
         write_metadata(
@@ -654,10 +949,9 @@ def main() -> None:
             result,
             source_name=source_name,
             target=target,
-            raw_glb=raw_export_path,
+            variants=metadata_variants,
         )
-
-    print(f"SUCCESS: Exported {args.glb}")
+        print(f"SUCCESS: Wrote metadata {args.metadata}")
 
 
 if __name__ == "__main__":

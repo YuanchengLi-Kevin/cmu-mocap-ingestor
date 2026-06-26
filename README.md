@@ -136,7 +136,13 @@ only when debugging Blender's raw GLB export.
 To process the first 10 valid BVH records in one headless Blender process:
 
 ```powershell
-blender --background data\assets\templates\xbot_template.blend --python src\features\blender_conversion\blender_batch.py -- --variant both --limit 10
+blender --background data\assets\templates\xbot_template.blend --python src\features\blender_conversion\blender_batch.py -- --limit 10
+```
+
+To split a batch across multiple isolated headless Blender worker processes:
+
+```powershell
+python -m features.blender_conversion.blender_multi_batch --template-blend data\assets\templates\xbot_template.blend --workers 2 --limit 10
 ```
 
 ## Import into PostgreSQL

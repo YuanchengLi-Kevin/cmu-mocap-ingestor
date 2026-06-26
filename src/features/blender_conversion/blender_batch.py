@@ -7,7 +7,7 @@ Run with Blender, not the project Python interpreter:
 
     blender --background data/assets/templates/xbot_template.blend \
         --python src/features/blender_conversion/blender_batch.py -- \
-        --variant both --limit 10 --no-gltfpack
+        --limit 10 --no-gltfpack
 """
 
 from __future__ import annotations
@@ -91,8 +91,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--variant",
         choices=("normal", "in-place", "both"),
-        default="normal",
-        help="Which GLB variant to export (default: normal).",
+        default="both",
+        help="Which GLB variant to export (default: both).",
     )
     parser.add_argument(
         "--target-rig-name",
@@ -387,6 +387,12 @@ def process_record(
                 in_place_root_bone=in_place.root_bone,
                 in_place_vertical_axis=in_place.vertical_axis,
                 in_place_neutralized_location_curves=in_place.neutralized_location_curves,
+                preview_bound=single.preview_bound_metadata(
+                    single_args,
+                    result,
+                    target=target,
+                    vertical_axis=in_place.vertical_axis,
+                ),
             )
             print(f"SUCCESS: {record['source_id']} -> {single_args.in_place_glb}")
 

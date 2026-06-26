@@ -42,6 +42,7 @@ DEFAULT_AXIS_UP = "Y"
 DEFAULT_SCALE = 1.0
 DEFAULT_GLTFPACK_ARGS = ["-kn", "-cc"]
 DEFAULT_IN_PLACE_VERTICAL_AXIS = "Y"
+DEFAULT_PREVIEW_BOUND_SAMPLE_COUNT = 24
 DEFAULT_IN_PLACE_ROOT_BONES = (
     "mixamorig:Hips",
     "Hips",
@@ -575,6 +576,100 @@ def create_in_place_action(
     )
 
 
+def sampled_frames(frame_start: int, frame_end: int, sample_count: int) -> list[int]:
+    """Return stable inclusive frame samples across an animation range."""
+    if frame_end < frame_start:
+        return []
+
+    frame_count = frame_end - frame_start + 1
+    if frame_count <= sample_count:
+        return list(range(frame_start, frame_end + 1))
+    if sample_count <= 1:
+        return [frame_start]
+
+    return sorted(
+        {
+            round(frame_start + ((frame_end - frame_start) * index / (sample_count - 1)))
+            for index in range(sample_count)
+        }
+    )
+
+
+def pose_bone_bounds(target: bpy.types.Object) -> tuple[float, float, float, float, float, float]:
+    """Return world-space bounds for the target armature pose bones."""
+    coordinates = []
+    target.update_from_editmode()
+    bpy.context.view_layer.update()
+
+    for bone in target.pose.bones:
+        coordinates.append(target.matrix_world @ bone.head)
+        coordinates.append(target.matrix_world @ bone.tail)
+
+    if not coordinates:
+        return (-1.0, 1.0, -1.0, 1.0, -1.0, 1.0)
+
+    xs = [point.x for point in coordinates]
+    ys = [point.y for point in coordinates]
+    zs = [point.z for point in coordinates]
+    return (min(xs), max(xs), min(ys), max(ys), min(zs), max(zs))
+
+
+def preview_bound_metadata(
+    args: argparse.Namespace,
+    result: RetargetResult,
+    *,
+    target: bpy.types.Object,
+    vertical_axis: str,
+    sample_count: int = DEFAULT_PREVIEW_BOUND_SAMPLE_COUNT,
+) -> dict[str, Any]:
+    """Sample animation bounds for frontend preview camera framing."""
+    frame_start = export_frame_start(args, result)
+    frame_end = result.export_frame_end
+    frames = sampled_frames(frame_start, frame_end, sample_count)
+    original_frame = bpy.context.scene.frame_current
+
+    bounds: tuple[float, float, float, float, float, float] | None = None
+    for frame in frames:
+        bpy.context.scene.frame_set(frame)
+        frame_bounds = pose_bone_bounds(target)
+        if bounds is None:
+            bounds = frame_bounds
+            continue
+        bounds = (
+            min(bounds[0], frame_bounds[0]),
+            max(bounds[1], frame_bounds[1]),
+            min(bounds[2], frame_bounds[2]),
+            max(bounds[3], frame_bounds[3]),
+            min(bounds[4], frame_bounds[4]),
+            max(bounds[5], frame_bounds[5]),
+        )
+
+    bpy.context.scene.frame_set(original_frame)
+    if bounds is None:
+        bounds = pose_bone_bounds(target)
+
+    minimum = [bounds[0], bounds[2], bounds[4]]
+    maximum = [bounds[1], bounds[3], bounds[5]]
+    center = [(minimum[index] + maximum[index]) / 2.0 for index in range(3)]
+    size = [maximum[index] - minimum[index] for index in range(3)]
+    radius = max(size) / 2.0
+    vertical_index = {"X": 0, "Y": 1, "Z": 2}[vertical_axis.upper()]
+
+    return {
+        "source": "target_pose_bones",
+        "frame_start": frame_start,
+        "frame_end": frame_end,
+        "sampled_frame_count": len(frames),
+        "min": minimum,
+        "max": maximum,
+        "center": center,
+        "size": size,
+        "radius": radius,
+        "vertical_axis": vertical_axis.upper(),
+        "height": size[vertical_index],
+    }
+
+
 def run_gltfpack(
     *,
     executable: str,
@@ -822,12 +917,13 @@ def variant_metadata(
     in_place_root_bone: str | None = None,
     in_place_vertical_axis: str | None = None,
     in_place_neutralized_location_curves: int | None = None,
+    preview_bound: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return metadata for one exported GLB variant."""
     source_id = args.source_id or source_id_from_filename(args.input)
     animation_variant = "in_place" if root_motion == "horizontal_removed" else "normal"
     frame_start = export_frame_start(args, result)
-    return {
+    metadata = {
         "animation_variant": animation_variant,
         "root_motion": root_motion,
         "glb_relative_path": relative_path_or_none(glb_path, REPOSITORY_ROOT),
@@ -861,6 +957,9 @@ def variant_metadata(
         "in_place_vertical_axis": in_place_vertical_axis,
         "in_place_neutralized_location_curves": in_place_neutralized_location_curves,
     }
+    if preview_bound is not None:
+        metadata["preview_bound"] = preview_bound
+    return metadata
 
 
 def main() -> None:
@@ -938,6 +1037,12 @@ def main() -> None:
                 in_place_root_bone=in_place.root_bone,
                 in_place_vertical_axis=in_place.vertical_axis,
                 in_place_neutralized_location_curves=in_place.neutralized_location_curves,
+                preview_bound=preview_bound_metadata(
+                    args,
+                    result,
+                    target=target,
+                    vertical_axis=in_place.vertical_axis,
+                ),
             )
 
         print(f"SUCCESS: Exported in-place {args.in_place_glb}")

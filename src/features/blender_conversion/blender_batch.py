@@ -7,7 +7,7 @@ Run with Blender, not the project Python interpreter:
 
     blender --background data/assets/templates/xbot_template.blend \
         --python src/features/blender_conversion/blender_batch.py -- \
-        --limit 10 --no-gltfpack
+        --variant both --limit 10 --no-gltfpack
 """
 
 from __future__ import annotations
@@ -71,6 +71,12 @@ def parse_args() -> argparse.Namespace:
         help=f"Output GLB directory (default: {DEFAULT_OUTPUT_DIR}).",
     )
     parser.add_argument(
+        "--in-place-glb-dir",
+        type=Path,
+        default=DEFAULT_OUTPUT_DIR,
+        help=f"Output in-place GLB directory (default: {DEFAULT_OUTPUT_DIR}).",
+    )
+    parser.add_argument(
         "--metadata-dir",
         type=Path,
         default=DEFAULT_OUTPUT_DIR,
@@ -83,6 +89,12 @@ def parse_args() -> argparse.Namespace:
         help="Number of valid records to process (default: 10).",
     )
     parser.add_argument(
+        "--variant",
+        choices=("normal", "in-place", "both"),
+        default="normal",
+        help="Which GLB variant to export (default: normal).",
+    )
+    parser.add_argument(
         "--target-rig-name",
         default=single.DEFAULT_TARGET_RIG_NAME,
         help=f"Template target armature name (default: {single.DEFAULT_TARGET_RIG_NAME}).",
@@ -92,6 +104,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=single.DEFAULT_EXPORT_FRAME_RATE,
         help=f"Export frame rate after retiming (default: {single.DEFAULT_EXPORT_FRAME_RATE}).",
+    )
+    parser.add_argument(
+        "--trim-start-frames",
+        type=int,
+        default=1,
+        help="Number of exported frames to skip from the start (default: 1).",
     )
     parser.add_argument(
         "--scale",
@@ -124,6 +142,19 @@ def parse_args() -> argparse.Namespace:
         help="Optional Rokoko add-on module name to enable before retargeting.",
     )
     parser.add_argument(
+        "--in-place-root-bone",
+        help="Root bone whose horizontal location curves are flattened for in-place GLBs.",
+    )
+    parser.add_argument(
+        "--in-place-vertical-axis",
+        choices=("X", "Y", "Z"),
+        default=single.DEFAULT_IN_PLACE_VERTICAL_AXIS,
+        help=(
+            "Root location axis to preserve for in-place GLBs "
+            f"(default: {single.DEFAULT_IN_PLACE_VERTICAL_AXIS})."
+        ),
+    )
+    parser.add_argument(
         "--no-gltfpack",
         action="store_true",
         help="Skip gltfpack optimization and write Blender's GLB directly.",
@@ -145,9 +176,12 @@ def parse_args() -> argparse.Namespace:
         help="Keep raw Blender GLBs after successful gltfpack optimization.",
     )
     args = parser.parse_args(blender_script_args())
+    if args.trim_start_frames < 0:
+        parser.error("--trim-start-frames must be zero or greater")
     args.manifest = args.manifest.resolve()
     args.input_root = args.input_root.resolve()
     args.glb_dir = args.glb_dir.resolve()
+    args.in_place_glb_dir = args.in_place_glb_dir.resolve()
     args.metadata_dir = args.metadata_dir.resolve()
     return args
 
@@ -207,33 +241,43 @@ def keep_only_action(action_to_keep: bpy.types.Action) -> None:
             bpy.data.actions.remove(action)
 
 
-def output_paths(args: argparse.Namespace, record: dict[str, Any]) -> tuple[Path, Path]:
+def output_paths(args: argparse.Namespace, record: dict[str, Any]) -> tuple[Path, Path, Path]:
     """Return GLB and metadata paths for one manifest record."""
     slug = single.asset_slug(record["source_id"])
-    return args.glb_dir / f"{slug}.glb", args.metadata_dir / f"{slug}.json"
+    return (
+        args.glb_dir / f"{slug}.glb",
+        args.in_place_glb_dir / f"{slug}_in_place.glb",
+        args.metadata_dir / f"{slug}.json",
+    )
 
 
 def record_args(args: argparse.Namespace, record: dict[str, Any]) -> argparse.Namespace:
     """Build the single-file helper argument namespace for one record."""
-    glb_path, metadata_path = output_paths(args, record)
+    glb_path, in_place_glb_path, metadata_path = output_paths(args, record)
     return argparse.Namespace(
         input=(args.input_root / record["relative_path"]).resolve(),
         glb=glb_path.resolve(),
+        in_place_glb=in_place_glb_path.resolve(),
+        variant=args.variant,
         metadata=metadata_path.resolve(),
         source_id=record["source_id"],
         source_relative_path=record["relative_path"],
         source_object_key=None,
         glb_object_key=None,
+        in_place_glb_object_key=None,
         thumbnail_object_key=None,
         conversion_version=args.conversion_version,
         target_rig_name=args.target_rig_name,
         source_frame_rate=record.get("frame_rate") or single.DEFAULT_SOURCE_FRAME_RATE,
         export_frame_rate=args.export_frame_rate,
+        trim_start_frames=args.trim_start_frames,
         scale=args.scale,
         axis_forward=args.axis_forward,
         axis_up=args.axis_up,
         rotate_mode=args.rotate_mode,
         rokoko_addon=args.rokoko_addon,
+        in_place_root_bone=args.in_place_root_bone,
+        in_place_vertical_axis=args.in_place_vertical_axis,
         no_gltfpack=args.no_gltfpack,
         gltfpack_path=args.gltfpack_path,
         gltfpack_arg=args.gltfpack_arg,
@@ -278,7 +322,6 @@ def process_record(
     """Process one motion record and return true on success."""
     single_args = record_args(args, record)
     source = None
-    raw_export_path = None
 
     try:
         restore_target_state(target, target_state)
@@ -295,21 +338,57 @@ def process_record(
         )
         remove_source_object(source)
         source = None
-        keep_only_action(result.action)
+        metadata_variants = {}
 
-        if single_args.no_gltfpack:
-            single.export_animation_glb(single_args.glb, target)
-        else:
-            raw_export_path = single.raw_glb_path(single_args)
-            single.export_animation_glb(raw_export_path, target)
-            single.run_gltfpack(
-                executable=single_args.gltfpack_path,
-                input_path=raw_export_path,
-                output_path=single_args.glb,
-                extra_args=[*single.DEFAULT_GLTFPACK_ARGS, *single_args.gltfpack_arg],
+        if single_args.variant in {"normal", "both"}:
+            target.animation_data.action = result.action
+            keep_only_action(result.action)
+            raw_export_path = single.export_glb_asset(
+                args=single_args,
+                target=target,
+                glb_path=single_args.glb,
+                result=result,
+                raw_glb=single.raw_glb_path(single_args),
             )
-            if not single_args.keep_raw_glb:
-                raw_export_path.unlink(missing_ok=True)
+            metadata_variants["normal"] = single.variant_metadata(
+                single_args,
+                result,
+                action=result.action,
+                glb_path=single_args.glb,
+                glb_object_key=single_args.glb_object_key,
+                raw_glb=raw_export_path,
+                root_motion="preserved",
+            )
+            print(f"SUCCESS: {record['source_id']} -> {single_args.glb}")
+
+        if single_args.variant in {"in-place", "both"}:
+            in_place = single.create_in_place_action(
+                result.action,
+                target,
+                root_bone=single_args.in_place_root_bone,
+                vertical_axis=single_args.in_place_vertical_axis,
+            )
+            target.animation_data.action = in_place.action
+            keep_only_action(in_place.action)
+            raw_export_path = single.export_glb_asset(
+                args=single_args,
+                target=target,
+                glb_path=single_args.in_place_glb,
+                result=result,
+            )
+            metadata_variants["in_place"] = single.variant_metadata(
+                single_args,
+                result,
+                action=in_place.action,
+                glb_path=single_args.in_place_glb,
+                glb_object_key=single_args.in_place_glb_object_key,
+                raw_glb=raw_export_path,
+                root_motion="horizontal_removed",
+                in_place_root_bone=in_place.root_bone,
+                in_place_vertical_axis=in_place.vertical_axis,
+                in_place_neutralized_location_curves=in_place.neutralized_location_curves,
+            )
+            print(f"SUCCESS: {record['source_id']} -> {single_args.in_place_glb}")
 
         single.write_metadata(
             single_args.metadata,
@@ -317,9 +396,8 @@ def process_record(
             result,
             source_name=source_name,
             target=target,
-            raw_glb=raw_export_path,
+            variants=metadata_variants,
         )
-        print(f"SUCCESS: {record['source_id']} -> {single_args.glb}")
         return True
     except Exception as error:
         print(f"ERROR: {record.get('source_id', '<unknown>')}: {error}")

@@ -129,13 +129,14 @@ contains the posed X Bot target rig:
 blender --background data\assets\templates\xbot_template.blend --python src\features\blender_conversion\blender_single.py -- --input data\source\cmu-mocap\data\001\01_01.bvh --glb data\assets\previews\cmu_01_01.glb --metadata data\assets\previews\cmu_01_01.json
 ```
 
-Pass `--no-gltfpack` to skip GLB optimization, or pass `--gltfpack-path` when
-`gltfpack.exe` is not on `PATH`.
+The conversion scripts optimize GLBs with `gltfpack` by default. Pass
+`--gltfpack-path` when `gltfpack.exe` is not on `PATH`. Pass `--no-gltfpack`
+only when debugging Blender's raw GLB export.
 
 To process the first 10 valid BVH records in one headless Blender process:
 
 ```powershell
-blender --background data\assets\templates\xbot_template.blend --python src\features\blender_conversion\blender_batch.py -- --limit 10 --no-gltfpack
+blender --background data\assets\templates\xbot_template.blend --python src\features\blender_conversion\blender_batch.py -- --variant both --limit 10
 ```
 
 ## Import into PostgreSQL

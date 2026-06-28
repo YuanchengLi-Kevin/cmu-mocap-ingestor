@@ -150,6 +150,8 @@ def test_worker_command_uses_batch_script_and_forwards_options(tmp_path: Path) -
     assert script_args[script_args.index("--variant") + 1] == "both"
     assert script_args[script_args.index("--export-frame-rate") + 1] == "24.0"
     assert script_args[script_args.index("--trim-start-frames") + 1] == "3"
+    assert "--axis-forward=-Z" in script_args
+    assert "--axis-forward" not in script_args
     assert script_args[script_args.index("--gltfpack-path") + 1] == "C:/tools/gltfpack.exe"
     assert ["--gltfpack-arg", "-si=0.5"] == script_args[
         script_args.index("--gltfpack-arg") : script_args.index("--gltfpack-arg") + 2

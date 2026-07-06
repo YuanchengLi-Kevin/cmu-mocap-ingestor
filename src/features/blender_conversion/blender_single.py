@@ -30,7 +30,7 @@ if str(SOURCE_ROOT) not in sys.path:
 
 from core.files import sha256_file  # noqa: E402
 
-import bpy
+import bpy  # noqa: E402
 
 DEFAULT_SOURCE_FRAME_RATE = 120.0
 DEFAULT_EXPORT_FRAME_RATE = 30.0
@@ -42,7 +42,9 @@ DEFAULT_AXIS_UP = "Y"
 DEFAULT_SCALE = 1.0
 DEFAULT_GLTFPACK_ARGS = ["-kn", "-cc"]
 DEFAULT_IN_PLACE_VERTICAL_AXIS = "Y"
-DEFAULT_PREVIEW_BOUND_SAMPLE_COUNT = 24
+DEFAULT_PREVIEW_FRAME_SAMPLE_COUNT = 24
+DEFAULT_PREVIEW_FRAME_HUMANOID_FLOOR_Y = 0.0
+DEFAULT_PREVIEW_FRAME_Y_MARGIN = 0.1
 DEFAULT_IN_PLACE_ROOT_BONES = (
     "mixamorig:Hips",
     "Hips",
@@ -142,10 +144,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--in-place-glb-object-key",
         help="Uploaded in-place GLB object key. Defaults to a deterministic key from source_id.",
-    )
-    parser.add_argument(
-        "--thumbnail-object-key",
-        help="Optional uploaded thumbnail object key.",
     )
     parser.add_argument(
         "--conversion-version",
@@ -595,32 +593,45 @@ def sampled_frames(frame_start: int, frame_end: int, sample_count: int) -> list[
     )
 
 
-def pose_bone_bounds(target: bpy.types.Object) -> tuple[float, float, float, float, float, float]:
-    """Return world-space bounds for the target armature pose bones."""
-    coordinates = []
+def pose_bone_y_bounds(
+    target: bpy.types.Object,
+) -> tuple[float, float]:
+    """Return world-space Y bounds for target pose-bone origins."""
+    ys = []
     target.update_from_editmode()
     bpy.context.view_layer.update()
 
     for bone in target.pose.bones:
-        coordinates.append(target.matrix_world @ bone.head)
-        coordinates.append(target.matrix_world @ bone.tail)
+        point = (target.matrix_world @ bone.matrix).translation
+        ys.append(point.y)
 
-    if not coordinates:
-        return (-1.0, 1.0, -1.0, 1.0, -1.0, 1.0)
+    if not ys:
+        return (
+            DEFAULT_PREVIEW_FRAME_HUMANOID_FLOOR_Y,
+            DEFAULT_PREVIEW_FRAME_HUMANOID_FLOOR_Y,
+        )
 
-    xs = [point.x for point in coordinates]
-    ys = [point.y for point in coordinates]
-    zs = [point.z for point in coordinates]
-    return (min(xs), max(xs), min(ys), max(ys), min(zs), max(zs))
+    return (min(ys), max(ys))
 
 
-def preview_bound_metadata(
+def preview_frame_from_bounds(
+    *,
+    floor_world_y: float,
+    max_world_y: float,
+) -> dict[str, float]:
+    """Return frontend preview framing metadata normalized to the reference floor."""
+    return {
+        "floor_y": DEFAULT_PREVIEW_FRAME_HUMANOID_FLOOR_Y,
+        "ceiling_y": max_world_y - floor_world_y + DEFAULT_PREVIEW_FRAME_Y_MARGIN,
+    }
+
+
+def preview_frame_metadata(
     args: argparse.Namespace,
     result: RetargetResult,
     *,
     target: bpy.types.Object,
-    vertical_axis: str,
-    sample_count: int = DEFAULT_PREVIEW_BOUND_SAMPLE_COUNT,
+    sample_count: int = DEFAULT_PREVIEW_FRAME_SAMPLE_COUNT,
 ) -> dict[str, Any]:
     """Sample animation bounds for frontend preview camera framing."""
     frame_start = export_frame_start(args, result)
@@ -628,46 +639,21 @@ def preview_bound_metadata(
     frames = sampled_frames(frame_start, frame_end, sample_count)
     original_frame = bpy.context.scene.frame_current
 
-    bounds: tuple[float, float, float, float, float, float] | None = None
+    bpy.context.scene.frame_set(result.export_frame_start)
+    reference_min_y, _ = pose_bone_y_bounds(target)
+    floor_world_y = reference_min_y - DEFAULT_PREVIEW_FRAME_Y_MARGIN
+
+    max_y: float | None = None
     for frame in frames:
         bpy.context.scene.frame_set(frame)
-        frame_bounds = pose_bone_bounds(target)
-        if bounds is None:
-            bounds = frame_bounds
-            continue
-        bounds = (
-            min(bounds[0], frame_bounds[0]),
-            max(bounds[1], frame_bounds[1]),
-            min(bounds[2], frame_bounds[2]),
-            max(bounds[3], frame_bounds[3]),
-            min(bounds[4], frame_bounds[4]),
-            max(bounds[5], frame_bounds[5]),
-        )
+        _, frame_max_y = pose_bone_y_bounds(target)
+        max_y = frame_max_y if max_y is None else max(max_y, frame_max_y)
 
     bpy.context.scene.frame_set(original_frame)
-    if bounds is None:
-        bounds = pose_bone_bounds(target)
+    if max_y is None:
+        _, max_y = pose_bone_y_bounds(target)
 
-    minimum = [bounds[0], bounds[2], bounds[4]]
-    maximum = [bounds[1], bounds[3], bounds[5]]
-    center = [(minimum[index] + maximum[index]) / 2.0 for index in range(3)]
-    size = [maximum[index] - minimum[index] for index in range(3)]
-    radius = max(size) / 2.0
-    vertical_index = {"X": 0, "Y": 1, "Z": 2}[vertical_axis.upper()]
-
-    return {
-        "source": "target_pose_bones",
-        "frame_start": frame_start,
-        "frame_end": frame_end,
-        "sampled_frame_count": len(frames),
-        "min": minimum,
-        "max": maximum,
-        "center": center,
-        "size": size,
-        "radius": radius,
-        "vertical_axis": vertical_axis.upper(),
-        "height": size[vertical_index],
-    }
+    return preview_frame_from_bounds(floor_world_y=floor_world_y, max_world_y=max_y)
 
 
 def run_gltfpack(
@@ -857,6 +843,7 @@ def write_metadata(
     """Write source-level metadata with generated asset variants."""
     source_id = args.source_id or source_id_from_filename(args.input)
     gltfpack_args = [*DEFAULT_GLTFPACK_ARGS, *args.gltfpack_arg]
+    export_start = export_frame_start(args, result)
     if variants is None:
         variants = {
             "normal": variant_metadata(
@@ -888,6 +875,15 @@ def write_metadata(
             result.source_frame_end,
             args.source_frame_rate,
         ),
+        "export_frame_start": export_start,
+        "export_frame_end": result.export_frame_end,
+        "export_frame_count": frame_count(export_start, result.export_frame_end),
+        "export_frame_rate": args.export_frame_rate,
+        "export_duration_seconds": duration_seconds(
+            export_start,
+            result.export_frame_end,
+            args.export_frame_rate,
+        ),
         "retargeted": True,
         "source_rig": source_name,
         "target_rig": "mixamo_xbot",
@@ -917,48 +913,29 @@ def variant_metadata(
     in_place_root_bone: str | None = None,
     in_place_vertical_axis: str | None = None,
     in_place_neutralized_location_curves: int | None = None,
-    preview_bound: dict[str, Any] | None = None,
+    preview_frame: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return metadata for one exported GLB variant."""
     source_id = args.source_id or source_id_from_filename(args.input)
     animation_variant = "in_place" if root_motion == "horizontal_removed" else "normal"
-    frame_start = export_frame_start(args, result)
     metadata = {
         "animation_variant": animation_variant,
         "root_motion": root_motion,
         "glb_relative_path": relative_path_or_none(glb_path, REPOSITORY_ROOT),
-        "raw_glb_relative_path": (
-            relative_path_or_none(raw_glb, REPOSITORY_ROOT)
-            if raw_glb is not None and raw_glb.exists()
-            else None
-        ),
         "glb_object_key": glb_object_key
         or default_glb_object_key(source_id, animation_variant),
-        "thumbnail_object_key": (
-            args.thumbnail_object_key if animation_variant == "normal" else None
-        ),
         "glb_sha256": sha256_file(glb_path),
-        "raw_glb_sha256": sha256_file(raw_glb) if raw_glb and raw_glb.exists() else None,
-        "thumbnail_sha256": None,
         "glb_size_bytes": glb_path.stat().st_size,
-        "raw_glb_size_bytes": raw_glb.stat().st_size if raw_glb and raw_glb.exists() else None,
-        "thumbnail_size_bytes": None,
-        "export_frame_start": frame_start,
-        "export_frame_end": result.export_frame_end,
-        "export_frame_count": frame_count(frame_start, result.export_frame_end),
-        "export_frame_rate": args.export_frame_rate,
-        "export_duration_seconds": duration_seconds(
-            frame_start,
-            result.export_frame_end,
-            args.export_frame_rate,
-        ),
         "target_action_name": action.name,
-        "in_place_root_bone": in_place_root_bone,
-        "in_place_vertical_axis": in_place_vertical_axis,
-        "in_place_neutralized_location_curves": in_place_neutralized_location_curves,
     }
-    if preview_bound is not None:
-        metadata["preview_bound"] = preview_bound
+    if animation_variant == "in_place":
+        metadata["in_place_root_bone"] = in_place_root_bone
+        metadata["in_place_vertical_axis"] = in_place_vertical_axis
+        metadata["in_place_neutralized_location_curves"] = (
+            in_place_neutralized_location_curves
+        )
+    if preview_frame is not None:
+        metadata["preview_frame"] = preview_frame
     return metadata
 
 
@@ -1037,11 +1014,10 @@ def main() -> None:
                 in_place_root_bone=in_place.root_bone,
                 in_place_vertical_axis=in_place.vertical_axis,
                 in_place_neutralized_location_curves=in_place.neutralized_location_curves,
-                preview_bound=preview_bound_metadata(
+                preview_frame=preview_frame_metadata(
                     args,
                     result,
                     target=target,
-                    vertical_axis=in_place.vertical_axis,
                 ),
             )
 

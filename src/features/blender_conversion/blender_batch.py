@@ -265,7 +265,6 @@ def record_args(args: argparse.Namespace, record: dict[str, Any]) -> argparse.Na
         source_object_key=None,
         glb_object_key=None,
         in_place_glb_object_key=None,
-        thumbnail_object_key=None,
         conversion_version=args.conversion_version,
         target_rig_name=args.target_rig_name,
         source_frame_rate=record.get("frame_rate") or single.DEFAULT_SOURCE_FRAME_RATE,
@@ -306,7 +305,6 @@ def write_failure_metadata(path: Path, single_args: argparse.Namespace, error: E
         "source_relative_path": single_args.source_relative_path,
         "source_object_key": single.default_source_object_key(source_id, single_args.input),
         "glb_object_key": single.default_glb_object_key(source_id),
-        "thumbnail_object_key": single_args.thumbnail_object_key,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
@@ -387,11 +385,10 @@ def process_record(
                 in_place_root_bone=in_place.root_bone,
                 in_place_vertical_axis=in_place.vertical_axis,
                 in_place_neutralized_location_curves=in_place.neutralized_location_curves,
-                preview_bound=single.preview_bound_metadata(
+                preview_frame=single.preview_frame_metadata(
                     single_args,
                     result,
                     target=target,
-                    vertical_axis=in_place.vertical_axis,
                 ),
             )
             print(f"SUCCESS: {record['source_id']} -> {single_args.in_place_glb}")

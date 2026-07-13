@@ -5,8 +5,9 @@ The project parses catalog metadata, validates BVH files, builds a joined motion
 manifest, retargets animations onto a shared humanoid rig, and exports
 browser-ready GLBs with integrity metadata.
 
-The current PostgreSQL feature imports the joined motion manifest. Cloudflare R2
-upload and PostgreSQL asset-key import are planned but are not implemented yet.
+The PostgreSQL feature imports the joined motion manifest. The R2 upload feature
+uploads and verifies converted GLBs and writes the asset manifest that will feed
+the planned PostgreSQL asset-key import.
 
 ## Repository layout
 
@@ -21,6 +22,7 @@ src/features/
   motion_manifest/       Join catalog and BVH metadata
   blender_conversion/    Retarget, export, and describe GLB assets
   skeleton_preview/      Static Three.js GLB viewer
+  r2_upload/              Upload and verify converted GLBs in Cloudflare R2
   postgres/              Import motions.json into PostgreSQL
 
 data/manifests/
@@ -62,6 +64,10 @@ motions.json + prepared Blender template
 motions.json
     -> features.postgres
     -> public.motions
+
+motions.json + converted GLBs + preview JSON
+    -> features.r2_upload
+    -> Cloudflare R2 + data/manifests/r2_assets.json
 ```
 
 The joined manifest is BVH-led. A BVH without a motion-index entry remains in
@@ -264,6 +270,43 @@ The viewer loads repository-relative paths such as:
 
 The browser loads the shared humanoid once, then applies animation clips from
 the animation-only GLBs to its matching Mixamo skeleton.
+
+## Cloudflare R2 upload
+
+Create R2 S3 API credentials and add the upload configuration to `.env`:
+
+```dotenv
+R2_ENDPOINT_URL=https://ACCOUNT_ID.r2.cloudflarestorage.com
+R2_BUCKET_NAME=your-bucket
+R2_ACCESS_KEY_ID=your-access-key-id
+R2_SECRET_ACCESS_KEY=your-secret-access-key
+```
+
+Upload every converted motion and atomically write the verified full-snapshot
+asset manifest:
+
+```powershell
+python -m features.r2_upload
+```
+
+The feature validates all selected source hashes, local GLB hashes, sizes, and
+object-key uniqueness before contacting R2. It uploads both GLB roles, verifies
+their sizes and recorded SHA-256 metadata with R2 `HEAD` requests, and writes:
+
+```text
+data/manifests/r2_assets.json
+```
+
+For a limited trial, use a non-default output so the full manifest cannot be
+replaced accidentally:
+
+```powershell
+python -m features.r2_upload --limit 1 --output data\manifests\r2_assets_trial.json
+```
+
+If an upload or verification fails, the destination manifest is left unchanged.
+Objects uploaded earlier in that attempt may remain in R2 and can be overwritten
+safely by a retry because object keys are deterministic.
 
 ## PostgreSQL import
 

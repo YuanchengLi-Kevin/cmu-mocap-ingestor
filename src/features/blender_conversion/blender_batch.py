@@ -30,6 +30,9 @@ if str(SOURCE_ROOT) not in sys.path:
 import bpy  # noqa: E402
 
 from features.blender_conversion import blender_single as single  # noqa: E402
+from features.blender_conversion.conversion_metadata import (  # noqa: E402
+    METADATA_SCHEMA_VERSION,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,8 +264,6 @@ def record_args(args: argparse.Namespace, record: dict[str, Any]) -> argparse.Na
         variant=args.variant,
         metadata=metadata_path.resolve(),
         source_id=record["source_id"],
-        source_relative_path=record["relative_path"],
-        source_object_key=None,
         glb_object_key=None,
         in_place_glb_object_key=None,
         conversion_version=args.conversion_version,
@@ -295,6 +296,7 @@ def write_failure_metadata(path: Path, single_args: argparse.Namespace, error: E
     """Write minimal failure metadata for resumable batch runs."""
     source_id = single_args.source_id or single.source_id_from_filename(single_args.input)
     metadata = {
+        "metadata_schema_version": METADATA_SCHEMA_VERSION,
         "source_id": source_id,
         "conversion_status": "conversion_failed",
         "conversion_version": single_args.conversion_version,
@@ -302,9 +304,6 @@ def write_failure_metadata(path: Path, single_args: argparse.Namespace, error: E
         "source_sha256": (
             single.sha256_file(single_args.input) if single_args.input.exists() else None
         ),
-        "source_relative_path": single_args.source_relative_path,
-        "source_object_key": single.default_source_object_key(source_id, single_args.input),
-        "glb_object_key": single.default_glb_object_key(source_id),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
@@ -327,7 +326,6 @@ def process_record(
             raise FileNotFoundError(f"BVH file does not exist: {single_args.input}")
 
         source = single.import_bvh(single_args)
-        source_name = source.name
         result = single.retarget_animation(
             source=source,
             target=target,
@@ -341,7 +339,7 @@ def process_record(
         if single_args.variant in {"normal", "both"}:
             target.animation_data.action = result.action
             keep_only_action(result.action)
-            raw_export_path = single.export_glb_asset(
+            single.export_glb_asset(
                 args=single_args,
                 target=target,
                 glb_path=single_args.glb,
@@ -350,12 +348,9 @@ def process_record(
             )
             metadata_variants["normal"] = single.variant_metadata(
                 single_args,
-                result,
-                action=result.action,
                 glb_path=single_args.glb,
+                animation_variant="normal",
                 glb_object_key=single_args.glb_object_key,
-                raw_glb=raw_export_path,
-                root_motion="preserved",
             )
             print(f"SUCCESS: {record['source_id']} -> {single_args.glb}")
 
@@ -368,7 +363,7 @@ def process_record(
             )
             target.animation_data.action = in_place.action
             keep_only_action(in_place.action)
-            raw_export_path = single.export_glb_asset(
+            single.export_glb_asset(
                 args=single_args,
                 target=target,
                 glb_path=single_args.in_place_glb,
@@ -376,14 +371,9 @@ def process_record(
             )
             metadata_variants["in_place"] = single.variant_metadata(
                 single_args,
-                result,
-                action=in_place.action,
                 glb_path=single_args.in_place_glb,
+                animation_variant="in_place",
                 glb_object_key=single_args.in_place_glb_object_key,
-                raw_glb=raw_export_path,
-                root_motion="horizontal_removed",
-                in_place_root_bone=in_place.root_bone,
-                in_place_vertical_axis=in_place.vertical_axis,
                 in_place_neutralized_location_curves=in_place.neutralized_location_curves,
                 preview_frame=single.preview_frame_metadata(
                     single_args,
@@ -397,8 +387,6 @@ def process_record(
             single_args.metadata,
             single_args,
             result,
-            source_name=source_name,
-            target=target,
             variants=metadata_variants,
         )
         return True

@@ -1,0 +1,28 @@
+{
+  "xbot-retarget-v1": {
+    "target_rig": "mixamo_xbot",
+    "target_rig_name": "Armature",
+    "scale": 1.0,
+    "axis_forward": "-Z",
+    "axis_up": "Y",
+    "rotate_mode": "NATIVE",
+    "trim_start_frames": 1,
+    "export_frame_rate": 30.0,
+    "gltfpack": true,
+    "gltfpack_args": [
+      "-kn",
+      "-cc"
+    ],
+    "preview_frame_sample_count": 24,
+    "preview_frame_humanoid_floor_y": 0.0,
+    "preview_frame_y_margin": 0.1,
+    "normal": {
+      "root_motion": "preserved"
+    },
+    "in_place": {
+      "root_motion": "horizontal_removed",
+      "root_bone": "mixamorig:Hips",
+      "vertical_axis": "Y"
+    }
+  }
+}

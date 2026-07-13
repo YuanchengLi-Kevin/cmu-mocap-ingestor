@@ -24,11 +24,14 @@ from typing import Any
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
-CMU_DATA_ROOT = REPOSITORY_ROOT / "data/source/cmu-mocap/data"
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
 from core.files import sha256_file  # noqa: E402
+from features.blender_conversion.conversion_metadata import (  # noqa: E402
+    METADATA_SCHEMA_VERSION,
+    validate_args_against_profile,
+)
 
 import bpy  # noqa: E402
 
@@ -128,14 +131,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--source-id",
         help="Canonical motion source ID. Defaults to deriving from CMU BVH filename.",
-    )
-    parser.add_argument(
-        "--source-relative-path",
-        help="Canonical source BVH path, relative to the CMU data root.",
-    )
-    parser.add_argument(
-        "--source-object-key",
-        help="Optional uploaded source BVH object key.",
     )
     parser.add_argument(
         "--glb-object-key",
@@ -393,24 +388,9 @@ def relative_path_or_none(path: Path, root: Path) -> str | None:
         return None
 
 
-def source_relative_path(args: argparse.Namespace) -> str | None:
-    """Return the source BVH path used by catalog metadata."""
-    if args.source_relative_path:
-        return args.source_relative_path.replace("\\", "/")
-    return (
-        relative_path_or_none(args.input, CMU_DATA_ROOT)
-        or relative_path_or_none(args.input, REPOSITORY_ROOT)
-    )
-
-
 def asset_slug(source_id: str) -> str:
     """Return the deterministic asset slug for one source ID."""
     return source_id.replace(":", "_")
-
-
-def default_source_object_key(source_id: str, source_path: Path) -> str:
-    """Return the deterministic source BVH object key."""
-    return f"cmu/source/{asset_slug(source_id)}{source_path.suffix.lower()}"
 
 
 def default_glb_object_key(source_id: str, animation_variant: str = "normal") -> str:
@@ -835,46 +815,39 @@ def write_metadata(
     args: argparse.Namespace,
     result: RetargetResult,
     *,
-    source_name: str,
-    target: bpy.types.Object,
     variants: dict[str, dict[str, Any]] | None = None,
-    raw_glb: Path | None = None,
 ) -> None:
     """Write source-level metadata with generated asset variants."""
+    validate_args_against_profile(
+        args,
+        target_rig="mixamo_xbot",
+        default_gltfpack_args=DEFAULT_GLTFPACK_ARGS,
+        in_place_root_bone=DEFAULT_IN_PLACE_ROOT_BONES[0],
+        preview_frame_sample_count=DEFAULT_PREVIEW_FRAME_SAMPLE_COUNT,
+        preview_frame_humanoid_floor_y=DEFAULT_PREVIEW_FRAME_HUMANOID_FLOOR_Y,
+        preview_frame_y_margin=DEFAULT_PREVIEW_FRAME_Y_MARGIN,
+    )
     source_id = args.source_id or source_id_from_filename(args.input)
-    gltfpack_args = [*DEFAULT_GLTFPACK_ARGS, *args.gltfpack_arg]
     export_start = export_frame_start(args, result)
     if variants is None:
         variants = {
             "normal": variant_metadata(
                 args,
-                result,
-                action=result.action,
                 glb_path=args.glb,
+                animation_variant="normal",
                 glb_object_key=args.glb_object_key,
-                raw_glb=raw_glb,
-                root_motion="preserved",
             )
         }
 
     metadata = {
+        "metadata_schema_version": METADATA_SCHEMA_VERSION,
         "source_id": source_id,
         "conversion_status": "converted",
         "conversion_version": args.conversion_version,
         "error_message": None,
         "source_sha256": sha256_file(args.input),
-        "source_relative_path": source_relative_path(args),
-        "source_object_key": args.source_object_key
-        or default_source_object_key(source_id, args.input),
         "source_frame_start": result.source_frame_start,
         "source_frame_end": result.source_frame_end,
-        "source_frame_count": frame_count(result.source_frame_start, result.source_frame_end),
-        "source_frame_rate": args.source_frame_rate,
-        "source_duration_seconds": duration_seconds(
-            result.source_frame_start,
-            result.source_frame_end,
-            args.source_frame_rate,
-        ),
         "export_frame_start": export_start,
         "export_frame_end": result.export_frame_end,
         "export_frame_count": frame_count(export_start, result.export_frame_end),
@@ -884,17 +857,6 @@ def write_metadata(
             result.export_frame_end,
             args.export_frame_rate,
         ),
-        "retargeted": True,
-        "source_rig": source_name,
-        "target_rig": "mixamo_xbot",
-        "target_rig_name": target.name,
-        "scale": args.scale,
-        "axis_forward": args.axis_forward,
-        "axis_up": args.axis_up,
-        "rotate_mode": args.rotate_mode,
-        "trim_start_frames": getattr(args, "trim_start_frames", 0),
-        "gltfpack": not args.no_gltfpack,
-        "gltfpack_args": gltfpack_args if not args.no_gltfpack else [],
         "variants": variants,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -903,34 +865,23 @@ def write_metadata(
 
 def variant_metadata(
     args: argparse.Namespace,
-    result: RetargetResult,
     *,
-    action: bpy.types.Action,
     glb_path: Path,
-    root_motion: str,
+    animation_variant: str,
     glb_object_key: str | None = None,
-    raw_glb: Path | None = None,
-    in_place_root_bone: str | None = None,
-    in_place_vertical_axis: str | None = None,
     in_place_neutralized_location_curves: int | None = None,
     preview_frame: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return metadata for one exported GLB variant."""
     source_id = args.source_id or source_id_from_filename(args.input)
-    animation_variant = "in_place" if root_motion == "horizontal_removed" else "normal"
     metadata = {
-        "animation_variant": animation_variant,
-        "root_motion": root_motion,
         "glb_relative_path": relative_path_or_none(glb_path, REPOSITORY_ROOT),
         "glb_object_key": glb_object_key
         or default_glb_object_key(source_id, animation_variant),
         "glb_sha256": sha256_file(glb_path),
         "glb_size_bytes": glb_path.stat().st_size,
-        "target_action_name": action.name,
     }
     if animation_variant == "in_place":
-        metadata["in_place_root_bone"] = in_place_root_bone
-        metadata["in_place_vertical_axis"] = in_place_vertical_axis
         metadata["in_place_neutralized_location_curves"] = (
             in_place_neutralized_location_curves
         )
@@ -952,7 +903,6 @@ def main() -> None:
 
     source = import_bvh(args)
     target = target_armature(args.target_rig_name)
-    source_name = source.name
     result = retarget_animation(
         source=source,
         target=target,
@@ -965,7 +915,7 @@ def main() -> None:
 
     if args.variant in {"normal", "both"}:
         target.animation_data.action = result.action
-        raw_export_path = export_glb_asset(
+        export_glb_asset(
             args=args,
             target=target,
             glb_path=args.glb,
@@ -976,12 +926,9 @@ def main() -> None:
         if args.metadata:
             metadata_variants["normal"] = variant_metadata(
                 args,
-                result,
-                action=result.action,
                 glb_path=args.glb,
+                animation_variant="normal",
                 glb_object_key=args.glb_object_key,
-                raw_glb=raw_export_path,
-                root_motion="preserved",
             )
 
         print(f"SUCCESS: Exported {args.glb}")
@@ -995,7 +942,7 @@ def main() -> None:
         )
         target.animation_data.action = in_place.action
         keep_only_action(in_place.action)
-        in_place_raw_export_path = export_glb_asset(
+        export_glb_asset(
             args=args,
             target=target,
             glb_path=args.in_place_glb,
@@ -1005,14 +952,9 @@ def main() -> None:
         if args.metadata:
             metadata_variants["in_place"] = variant_metadata(
                 args,
-                result,
-                action=in_place.action,
                 glb_path=args.in_place_glb,
+                animation_variant="in_place",
                 glb_object_key=args.in_place_glb_object_key,
-                raw_glb=in_place_raw_export_path,
-                root_motion="horizontal_removed",
-                in_place_root_bone=in_place.root_bone,
-                in_place_vertical_axis=in_place.vertical_axis,
                 in_place_neutralized_location_curves=in_place.neutralized_location_curves,
                 preview_frame=preview_frame_metadata(
                     args,
@@ -1028,8 +970,6 @@ def main() -> None:
             args.metadata,
             args,
             result,
-            source_name=source_name,
-            target=target,
             variants=metadata_variants,
         )
         print(f"SUCCESS: Wrote metadata {args.metadata}")

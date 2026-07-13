@@ -122,6 +122,7 @@ def parse_bvh(path: Path, input_root: Path) -> dict[str, Any]:
         "relative_path": path.relative_to(input_root).as_posix(),
         "subject_id": int(subject_text),
         "trial_id": int(trial_text),
+        "source_size_bytes": path.stat().st_size,
         "sha256": sha256_file(path),
         "frame_count": frame_count,
         "frame_time": frame_time,

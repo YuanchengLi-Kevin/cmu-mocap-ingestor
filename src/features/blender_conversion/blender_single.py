@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -36,6 +37,7 @@ from features.blender_conversion.conversion_metadata import (  # noqa: E402
 import bpy  # noqa: E402
 
 DEFAULT_SOURCE_FRAME_RATE = 120.0
+DEFAULT_RETARGET_FRAME_RATE = 30.0
 DEFAULT_EXPORT_FRAME_RATE = 30.0
 DEFAULT_TARGET_RIG_NAME = "Armature"
 DEFAULT_CONVERSION_VERSION = "xbot-retarget-v1"
@@ -45,9 +47,16 @@ DEFAULT_AXIS_UP = "Y"
 DEFAULT_SCALE = 1.0
 DEFAULT_GLTFPACK_ARGS = ["-kn", "-cc"]
 DEFAULT_IN_PLACE_VERTICAL_AXIS = "Y"
-DEFAULT_PREVIEW_FRAME_SAMPLE_COUNT = 24
+DEFAULT_PREVIEW_FRAME_SAMPLE_INTERVAL_SECONDS = 0.5
 DEFAULT_PREVIEW_FRAME_HUMANOID_FLOOR_Y = 0.0
 DEFAULT_PREVIEW_FRAME_Y_MARGIN = 0.1
+DEFAULT_PREVIEW_FRAME_BONES = (
+    "mixamorig:Head",
+    "mixamorig:LeftHand",
+    "mixamorig:RightHand",
+    "mixamorig:LeftFoot",
+    "mixamorig:RightFoot",
+)
 DEFAULT_IN_PLACE_ROOT_BONES = (
     "mixamorig:Hips",
     "Hips",
@@ -345,7 +354,7 @@ def export_animation_glb(path: Path, armature: bpy.types.Object) -> None:
             "export_animations": True,
             "export_frame_range": True,
             "export_force_sampling": False,
-            "export_optimize_animation_size": True,
+            "export_optimize_animation_size": False,
             "export_skins": True,
             "export_def_bones": True,
             "export_materials": "NONE",
@@ -417,9 +426,9 @@ def retime_action(
     target_fps: float,
     frame_start: int,
 ) -> None:
-    """Scale keyframes to the export FPS while preserving animation duration."""
+    """Scale keyframes to a target FPS while preserving animation duration."""
     if target_fps <= 0:
-        raise ValueError("--export-frame-rate must be positive")
+        raise ValueError("Target frame rate must be positive")
     if source_fps <= 0:
         raise ValueError("--source-frame-rate must be positive")
 
@@ -565,44 +574,44 @@ def sampled_frames(frame_start: int, frame_end: int, sample_count: int) -> list[
     if sample_count <= 1:
         return [frame_start]
 
-    return sorted(
-        {
-            round(frame_start + ((frame_end - frame_start) * index / (sample_count - 1)))
-            for index in range(sample_count)
-        }
-    )
+    return [
+        round(frame_start + ((frame_end - frame_start) * index / (sample_count - 1)))
+        for index in range(sample_count)
+    ]
 
 
-def pose_bone_y_bounds(
+def pose_bone_z_bounds(
     target: bpy.types.Object,
+    *,
+    bones: list[bpy.types.PoseBone] | None = None,
 ) -> tuple[float, float]:
-    """Return world-space Y bounds for target pose-bone origins."""
-    ys = []
-    target.update_from_editmode()
-    bpy.context.view_layer.update()
+    """Return world-space Z bounds for target pose-bone origins."""
+    zs = []
+    # target.update_from_editmode()
+    # bpy.context.view_layer.update()
 
-    for bone in target.pose.bones:
+    for bone in target.pose.bones if bones is None else bones:
         point = (target.matrix_world @ bone.matrix).translation
-        ys.append(point.y)
+        zs.append(point.z)
 
-    if not ys:
+    if not zs:
         return (
             DEFAULT_PREVIEW_FRAME_HUMANOID_FLOOR_Y,
             DEFAULT_PREVIEW_FRAME_HUMANOID_FLOOR_Y,
         )
 
-    return (min(ys), max(ys))
+    return (min(zs), max(zs))
 
 
 def preview_frame_from_bounds(
     *,
-    floor_world_y: float,
-    max_world_y: float,
+    floor_world_z: float,
+    max_world_z: float,
 ) -> dict[str, float]:
     """Return frontend preview framing metadata normalized to the reference floor."""
     return {
         "floor_y": DEFAULT_PREVIEW_FRAME_HUMANOID_FLOOR_Y,
-        "ceiling_y": max_world_y - floor_world_y + DEFAULT_PREVIEW_FRAME_Y_MARGIN,
+        "ceiling_y": max_world_z - floor_world_z,
     }
 
 
@@ -611,29 +620,35 @@ def preview_frame_metadata(
     result: RetargetResult,
     *,
     target: bpy.types.Object,
-    sample_count: int = DEFAULT_PREVIEW_FRAME_SAMPLE_COUNT,
 ) -> dict[str, Any]:
     """Sample animation bounds for frontend preview camera framing."""
     frame_start = export_frame_start(args, result)
     frame_end = result.export_frame_end
+    duration_seconds = (frame_end - frame_start + 1) / args.export_frame_rate
+    sample_count = max(
+        1,
+        math.ceil(duration_seconds / DEFAULT_PREVIEW_FRAME_SAMPLE_INTERVAL_SECONDS),
+    )
     frames = sampled_frames(frame_start, frame_end, sample_count)
     original_frame = bpy.context.scene.frame_current
+    preview_bones = [target.pose.bones[name] for name in DEFAULT_PREVIEW_FRAME_BONES]
 
-    bpy.context.scene.frame_set(result.export_frame_start)
-    reference_min_y, _ = pose_bone_y_bounds(target)
-    floor_world_y = reference_min_y - DEFAULT_PREVIEW_FRAME_Y_MARGIN
-
-    max_y: float | None = None
+    min_z: float | None = None
+    max_z: float | None = None
     for frame in frames:
         bpy.context.scene.frame_set(frame)
-        _, frame_max_y = pose_bone_y_bounds(target)
-        max_y = frame_max_y if max_y is None else max(max_y, frame_max_y)
+        frame_min_z, frame_max_z = pose_bone_z_bounds(
+            target,
+            bones=preview_bones,
+        )
+        min_z = frame_min_z if min_z is None else min(min_z, frame_min_z)
+        max_z = frame_max_z if max_z is None else max(max_z, frame_max_z)
 
     bpy.context.scene.frame_set(original_frame)
-    if max_y is None:
-        _, max_y = pose_bone_y_bounds(target)
+    if min_z is None or max_z is None:
+        min_z, max_z = pose_bone_z_bounds(target, bones=preview_bones)
 
-    return preview_frame_from_bounds(floor_world_y=floor_world_y, max_world_y=max_y)
+    return preview_frame_from_bounds(floor_world_z=min_z, max_world_z=max_z)
 
 
 def run_gltfpack(
@@ -751,7 +766,23 @@ def retarget_animation(
     scene.frame_end = int(source_action.frame_range[1])
     source_frame_start = scene.frame_start
     source_frame_end = scene.frame_end
-    scene.render.fps = int(round(source_frame_rate))
+    retime_action(
+        source_action,
+        source_fps=source_frame_rate,
+        target_fps=DEFAULT_RETARGET_FRAME_RATE,
+        frame_start=scene.frame_start,
+    )
+    source_to_retarget_ratio = DEFAULT_RETARGET_FRAME_RATE / source_frame_rate
+    scene.frame_end = max(
+        scene.frame_start,
+        int(
+            round(
+                scene.frame_start
+                + ((source_frame_end - scene.frame_start) * source_to_retarget_ratio)
+            )
+        ),
+    )
+    scene.render.fps = int(round(DEFAULT_RETARGET_FRAME_RATE))
 
     scene.rsl_retargeting_armature_source = source
     scene.rsl_retargeting_armature_target = target
@@ -773,19 +804,13 @@ def retarget_animation(
         raise RuntimeError("Target armature has no retargeted action")
 
     target_action = target.animation_data.action
-    ratio = export_frame_rate / source_frame_rate
+    if export_frame_rate != DEFAULT_RETARGET_FRAME_RATE:
+        raise ValueError(
+            "--export-frame-rate must match the retarget frame rate "
+            f"({DEFAULT_RETARGET_FRAME_RATE})"
+        )
     frame_start = scene.frame_start
-    scene.frame_end = max(
-        frame_start,
-        int(round(frame_start + ((scene.frame_end - frame_start) * ratio))),
-    )
     scene.render.fps = int(round(export_frame_rate))
-    retime_action(
-        target_action,
-        source_fps=source_frame_rate,
-        target_fps=export_frame_rate,
-        frame_start=frame_start,
-    )
     return RetargetResult(
         action=target_action,
         source_frame_start=source_frame_start,
@@ -823,7 +848,10 @@ def write_metadata(
         target_rig="mixamo_xbot",
         default_gltfpack_args=DEFAULT_GLTFPACK_ARGS,
         in_place_root_bone=DEFAULT_IN_PLACE_ROOT_BONES[0],
-        preview_frame_sample_count=DEFAULT_PREVIEW_FRAME_SAMPLE_COUNT,
+        retarget_frame_rate=DEFAULT_RETARGET_FRAME_RATE,
+        preview_frame_sample_interval_seconds=(
+            DEFAULT_PREVIEW_FRAME_SAMPLE_INTERVAL_SECONDS
+        ),
         preview_frame_humanoid_floor_y=DEFAULT_PREVIEW_FRAME_HUMANOID_FLOOR_Y,
         preview_frame_y_margin=DEFAULT_PREVIEW_FRAME_Y_MARGIN,
     )

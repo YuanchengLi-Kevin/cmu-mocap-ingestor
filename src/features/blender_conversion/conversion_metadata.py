@@ -40,7 +40,8 @@ def validate_args_against_profile(
     target_rig: str,
     default_gltfpack_args: list[str],
     in_place_root_bone: str,
-    preview_frame_sample_count: int,
+    retarget_frame_rate: float,
+    preview_frame_sample_interval_seconds: float,
     preview_frame_humanoid_floor_y: float,
     preview_frame_y_margin: float,
 ) -> None:
@@ -54,12 +55,15 @@ def validate_args_against_profile(
         "axis_up": args.axis_up,
         "rotate_mode": args.rotate_mode,
         "trim_start_frames": args.trim_start_frames,
+        "retarget_frame_rate": retarget_frame_rate,
         "export_frame_rate": args.export_frame_rate,
         "gltfpack": not args.no_gltfpack,
         "gltfpack_args": [*default_gltfpack_args, *args.gltfpack_arg]
         if not args.no_gltfpack
         else [],
-        "preview_frame_sample_count": preview_frame_sample_count,
+        "preview_frame_sample_interval_seconds": (
+            preview_frame_sample_interval_seconds
+        ),
         "preview_frame_humanoid_floor_y": preview_frame_humanoid_floor_y,
         "preview_frame_y_margin": preview_frame_y_margin,
     }

@@ -7,13 +7,14 @@
     "axis_up": "Y",
     "rotate_mode": "NATIVE",
     "trim_start_frames": 1,
+    "retarget_frame_rate": 30.0,
     "export_frame_rate": 30.0,
     "gltfpack": true,
     "gltfpack_args": [
       "-kn",
       "-cc"
     ],
-    "preview_frame_sample_count": 24,
+    "preview_frame_sample_interval_seconds": 0.5,
     "preview_frame_humanoid_floor_y": 0.0,
     "preview_frame_y_margin": 0.1,
     "normal": {

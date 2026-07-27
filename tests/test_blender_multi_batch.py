@@ -116,6 +116,24 @@ def test_partition_records_balances_without_duplication() -> None:
     ]
 
 
+def test_partition_records_rejects_nonpositive_workers() -> None:
+    """Worker count must be positive before shard math begins."""
+    with pytest.raises(ValueError, match="worker_count must be positive"):
+        multi_batch.partition_records([manifest_record("cmu:01:01")], 0)
+
+
+def test_is_converted_metadata_tolerates_missing_and_invalid_json(tmp_path: Path) -> None:
+    """Resume checks treat absent or corrupt metadata as work still to do."""
+    path = tmp_path / "metadata.json"
+    assert not multi_batch.is_converted_metadata(path)
+    path.write_text("{", encoding="utf-8")
+    assert not multi_batch.is_converted_metadata(path)
+    write_json(path, {"conversion_status": "conversion_failed"})
+    assert not multi_batch.is_converted_metadata(path)
+    write_json(path, {"conversion_status": "converted"})
+    assert multi_batch.is_converted_metadata(path)
+
+
 def test_worker_command_uses_batch_script_and_forwards_options(tmp_path: Path) -> None:
     """Worker commands call Blender with the batch script and forwarded flags."""
     args = parse_args(
@@ -183,3 +201,25 @@ def test_run_worker_commands_uses_injected_process_factory() -> None:
     assert exit_codes == [0]
     assert launched[0][0] == ["blender", "--background", "template.blend"]
     assert launched[0][1]["text"] is True
+
+
+def test_run_returns_failure_when_any_worker_fails(tmp_path: Path) -> None:
+    """The launcher aggregates worker exit codes into one process result."""
+    args = parse_args(tmp_path, "--workers", "2")
+    write_json(
+        args.manifest,
+        [manifest_record("cmu:01:01"), manifest_record("cmu:01:02")],
+    )
+    exit_codes = iter([0, 3])
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.stdout = []
+            self.exit_code = next(exit_codes)
+
+        def wait(self) -> int:
+            return self.exit_code
+
+    result = multi_batch.run(args, popen_factory=lambda *args, **kwargs: FakeProcess())
+
+    assert result == 1

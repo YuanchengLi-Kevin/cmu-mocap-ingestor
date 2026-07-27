@@ -88,6 +88,40 @@ def test_join_rejects_conflicting_identifiers() -> None:
         join_records([conflicting], [bvh_record()])
 
 
+def test_join_rejects_bvh_identity_conflicting_with_filename() -> None:
+    """BVH metadata identity must remain derivable from its filename."""
+    with pytest.raises(ValueError, match="BVH trial_id conflicts"):
+        join_records([], [bvh_record(trial_id=2)])
+
+
+def test_join_rejects_missing_required_fields() -> None:
+    """Incomplete upstream records fail before a partial join is emitted."""
+    incomplete = bvh_record()
+    del incomplete["sha256"]
+
+    with pytest.raises(ValueError, match="missing fields: sha256"):
+        join_records([], [incomplete])
+
+
+def test_join_rejects_duplicate_derived_source_ids() -> None:
+    """Different filename spellings cannot produce duplicate catalog identities."""
+    second_index = index_record("02_01.bvh")
+    second_index.update(
+        {
+            "source_id": "cmu:01:01",
+            "subject_id": 2,
+            "trial_id": 1,
+        }
+    )
+    second_bvh = bvh_record("02_01.bvh", 2, 1)
+
+    with pytest.raises(ValueError, match="Duplicate source_id"):
+        join_records(
+            [index_record(), second_index],
+            [bvh_record(), second_bvh],
+        )
+
+
 def test_build_manifest_writes_deterministic_json(tmp_path: Path) -> None:
     """The file API preserves BVH order and emits a JSON array."""
     index_path = tmp_path / "motion_index.json"

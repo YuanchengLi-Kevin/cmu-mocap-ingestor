@@ -59,7 +59,7 @@ def shared_asset_record() -> dict[str, object]:
         "asset_id": "humanoid",
         "object_key": "cmu/humanoid/cmu_humanoid.glb",
         "sha256": "d" * 64,
-        "size_bytes": 100012,
+        "size_bytes": 151240,
         "uploaded_at": "2026-07-27T17:51:54Z",
     }
 
@@ -149,7 +149,7 @@ def test_import_catalog_creates_and_upserts_all_three_tables(
     assert "public.shared_assets" in connection.fake_cursor.executed[2]
     assert len(connection.fake_cursor.upserts) == 3
     assert connection.fake_cursor.upserts[2][1][0][0] == "humanoid"
-    assert connection.fake_cursor.upserts[2][1][0][3] == 100012
+    assert connection.fake_cursor.upserts[2][1][0][3] == 151240
     assert connection.committed
     assert not connection.rolled_back
     assert connection.closed

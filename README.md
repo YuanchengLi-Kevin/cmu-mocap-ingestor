@@ -1,100 +1,72 @@
 # CMU MoCap Ingestor
 
-Ingestion and asset-conversion pipeline for the CGSpeed CMU BVH motion dataset.
-The project parses catalog metadata, validates BVH files, builds a joined motion
-manifest, retargets animations onto a shared humanoid rig, and exports
-browser-ready GLBs with integrity metadata.
-
-The PostgreSQL feature imports the joined motion manifest and verified motion
-and shared R2 asset metadata. The R2 upload feature uploads and verifies
-converted GLBs and writes the authoritative motion asset manifest.
+Ingestion and asset-conversion pipeline for the CGSpeed CMU BVH motion
+dataset. It parses catalog metadata, validates BVH files, builds a joined
+motion manifest, retargets animations onto a shared humanoid rig, uploads
+browser-ready GLBs to Cloudflare R2, and imports verified metadata into
+PostgreSQL.
 
 ## Repository layout
 
 ```text
-src/core/
-  files.py
-  json_io.py
-
+src/core/                         Shared file and JSON helpers
 src/features/
-  motion_index/          Parse CMU catalog descriptions
-  bvh_metadata/          Validate BVHs and extract source metadata
-  motion_manifest/       Join catalog and BVH metadata
-  blender_conversion/    Retarget, export, and describe GLB assets
-  skeleton_preview/      Static Three.js GLB viewer
-  r2_upload/              Upload and verify converted GLBs in Cloudflare R2
-  postgres/              Import motions and verified assets into PostgreSQL
+  motion_index/                   Parse the CMU catalog
+  bvh_metadata/                   Validate BVHs and extract metadata
+  motion_manifest/                Join catalog and BVH records
+  blender_conversion/             Retarget and export animation GLBs
+  skeleton_preview/               Static Three.js GLB viewer
+  r2_upload/                      Upload and verify converted GLBs
+  postgres/                       Import verified catalog metadata
 
-data/manifests/
-  source.json
-  motion_index.json
-  bvh_metadata.json
-  motions.json
-
+data/manifests/                   Generated JSON manifests
 data/assets/
-  templates/             Prepared Blender target-rig scene
-  humanoid/              Shared browser humanoid asset
-  previews/              Normal GLBs, in-place GLBs, and preview JSON
+  templates/                      Blender scene and canonical humanoid GLB
+  humanoid/                       Legacy, noncanonical humanoid copy
+  previews/                       Converted GLBs and preview metadata
 ```
 
-Feature packages may import their own internal modules and shared `core`
-utilities, but must not import other feature packages.
+Feature packages may import their own modules and shared `core` utilities,
+but must not import other feature packages.
 
 ## Pipeline
 
 ```text
-CMU index text
-    -> features.motion_index
-    -> data/manifests/motion_index.json
-
-CMU BVH files
-    -> features.bvh_metadata
-    -> data/manifests/bvh_metadata.json
-
-motion_index.json + bvh_metadata.json
-    -> features.motion_manifest
-    -> data/manifests/motions.json
-
-motions.json + prepared Blender template
-    -> features.blender_conversion
-    -> normal playback GLB
-    -> in-place preview-card GLB
-    -> schema-v2 preview JSON
-
-motions.json
-    -> features.postgres
-    -> public.motions
-
-motions.json + converted GLBs + preview JSON
-    -> features.r2_upload
-    -> Cloudflare R2 + data/manifests/r2_assets.json
-
-motions.json + r2_assets.json + r2_shared_assets.json
-    -> features.postgres
-    -> public.motions + public.motion_assets + public.shared_assets
+CMU index text ──────────────> motion_index.json
+CMU BVH files ───────────────> bvh_metadata.json
+motion_index + BVH metadata ─> motions.json
+motions + Blender template ──> playback GLB + in-place GLB + preview JSON
+converted assets ────────────> Cloudflare R2 + r2_assets.json
+verified manifests ──────────> PostgreSQL
+                                  public.motions
+                                  public.motion_assets
+                                  public.shared_assets
 ```
 
-The joined manifest is BVH-led. A BVH without a motion-index entry remains in
-`motions.json` with a derived `source_id` and null descriptions.
+The joined manifest is BVH-led: a BVH without a catalog entry remains in
+`motions.json` with a derived source ID and null descriptions.
 
 ## Setup
 
-Run commands from the repository root with the virtual environment activated:
+Python 3.12 or newer is required. From the repository root:
 
 ```powershell
 python -m pip install -e ".[dev]"
 ```
 
-Blender conversion also requires:
+Blender conversion additionally requires:
 
 - Blender with BVH and glTF import/export support
-- a prepared target-rig `.blend` file
-- the Rokoko retargeting add-on available to Blender
+- A prepared target-rig `.blend` file
+- The Rokoko retargeting add-on
 - `gltfpack` on `PATH`, or an explicit `--gltfpack-path`
+
+Operational credentials belong in an ignored `.env` file. Copy the variable
+names from [.env.example](.env.example).
 
 ## Generate manifests
 
-Run the three manifest stages in order:
+Run the manifest stages in order:
 
 ```powershell
 python -m features.motion_index
@@ -102,7 +74,7 @@ python -m features.bvh_metadata
 python -m features.motion_manifest
 ```
 
-Default outputs are:
+Default outputs:
 
 ```text
 data/manifests/motion_index.json
@@ -110,240 +82,134 @@ data/manifests/bvh_metadata.json
 data/manifests/motions.json
 ```
 
-`bvh_metadata` validates hierarchy declarations, motion row sizes, numeric
-values, frame counts, and frame timing. It also records the original BVH
-SHA-256 and `source_size_bytes`.
+`bvh_metadata` checks hierarchy declarations, channel counts, motion row
+widths and values, frame counts, and frame timing. Invalid BVHs remain visible
+in the manifest with `validation_status: "invalid"`.
 
-## Blender conversion
+## Convert animations
 
-The converter imports a CMU BVH, retargets it onto the X Bot skeleton, retimes
-the animation, and exports animation-only GLBs that target the same Mixamo bone
-names as the shared humanoid.
-
-Each successfully converted motion produces two GLBs by default:
+The converter retargets CMU animation onto the X Bot skeleton, retimes it to
+30 FPS, and exports animation-only GLBs compatible with the canonical humanoid:
 
 ```text
-data/assets/previews/cmu_01_01.glb
-  Normal root motion; loaded after the user selects a motion.
-
-data/assets/previews/cmu_01_01_in_place.glb
-  Horizontal root motion removed; used for an animated preview card.
-
-data/assets/previews/cmu_01_01.json
-  Source fingerprint, export timing, GLB hashes, sizes, object keys, and framing.
+data/assets/templates/cmu_humanoid.glb
 ```
 
-The website should expose one searchable motion, not two searchable variants.
-The normal and in-place GLBs are assets with playback and preview-card roles.
+Each successful motion produces:
 
-CMU source timing is approximately 120 FPS. The current conversion profile
-retimes exports to 30 FPS and trims one exported frame from the start.
+```text
+cmu_01_01.glb             Playback with normal root motion
+cmu_01_01_in_place.glb    Preview-card animation with horizontal motion removed
+cmu_01_01.json            Source fingerprint and asset integrity metadata
+```
 
-### Convert one motion
-
-Run Blender with a template that already contains the prepared target rig:
+### One motion
 
 ```powershell
-blender --background data\assets\templates\xbot_template.blend --python src\features\blender_conversion\blender_single.py -- --input data\source\cmu-mocap\data\001\01_01.bvh --glb data\assets\previews\cmu_01_01.glb --in-place-glb data\assets\previews\cmu_01_01_in_place.glb --metadata data\assets\previews\cmu_01_01.json
+blender --background data\assets\templates\xbot_template.blend `
+  --python src\features\blender_conversion\blender_single.py -- `
+  --input data\source\cmu-mocap\data\001\01_01.bvh `
+  --glb data\assets\previews\cmu_01_01.glb `
+  --in-place-glb data\assets\previews\cmu_01_01_in_place.glb `
+  --metadata data\assets\previews\cmu_01_01.json
 ```
 
-Providing both output paths makes the default variant `both`.
+Providing both GLB paths selects the default `both` variant.
 
-### Convert a batch in one Blender process
-
-This processes the first 10 valid manifest records and produces both GLBs for
-each motion:
+### Batch in one Blender process
 
 ```powershell
-blender --background data\assets\templates\xbot_template.blend --python src\features\blender_conversion\blender_batch.py -- --limit 10
+blender --background data\assets\templates\xbot_template.blend `
+  --python src\features\blender_conversion\blender_batch.py -- `
+  --limit 10
 ```
 
-### Convert with isolated workers
-
-The multi-worker launcher shards records across independent headless Blender
-processes:
+### Isolated workers
 
 ```powershell
-python -m features.blender_conversion.blender_multi_batch --template-blend data\assets\templates\xbot_template.blend --workers 2 --limit 10
+python -m features.blender_conversion.blender_multi_batch `
+  --template-blend data\assets\templates\xbot_template.blend `
+  --workers 2 `
+  --limit 10
 ```
 
-To resume a larger run without reconverting records whose JSON metadata is
-already marked `converted`:
+Resume a larger run without repeating successful conversions:
 
 ```powershell
-python -m features.blender_conversion.blender_multi_batch --template-blend data\assets\templates\xbot_template.blend --workers 2 --limit 10000 --skip-existing-metadata
+python -m features.blender_conversion.blender_multi_batch `
+  --template-blend data\assets\templates\xbot_template.blend `
+  --workers 2 `
+  --limit 10000 `
+  --skip-existing-metadata
 ```
 
-The limit is applied after existing converted records are skipped.
+Conversion runs `gltfpack` by default with the active conversion profile.
+`--no-gltfpack` is intended for debugging raw Blender exports.
 
-### GLB optimization
+## Preview locally
 
-Conversion runs `gltfpack` by default with the arguments defined by the active
-conversion profile. Use `--gltfpack-path` when the executable is not on `PATH`.
-`--no-gltfpack` is intended only for debugging raw Blender exports.
-
-## Conversion profiles and preview metadata
-
-Shared conversion settings live in
-`src/features/blender_conversion/conversion_profiles.json`, keyed by
-`conversion_version`. Per-motion JSON stores only the source fingerprint and
-values specific to that conversion and its generated assets.
-
-Current preview metadata uses `metadata_schema_version: 2`:
-
-```json
-{
-  "metadata_schema_version": 2,
-  "source_id": "cmu:01:01",
-  "conversion_status": "converted",
-  "conversion_version": "xbot-retarget-v1",
-  "error_message": null,
-  "source_sha256": "abc123...",
-  "source_frame_start": 1,
-  "source_frame_end": 2752,
-  "export_frame_start": 2,
-  "export_frame_end": 689,
-  "export_frame_count": 688,
-  "export_frame_rate": 30.0,
-  "export_duration_seconds": 22.9333333333,
-  "variants": {
-    "normal": {
-      "glb_relative_path": "data/assets/previews/cmu_01_01.glb",
-      "glb_object_key": "cmu/previews/cmu_01_01.glb",
-      "glb_sha256": "def456...",
-      "glb_size_bytes": 65680
-    },
-    "in_place": {
-      "glb_relative_path": "data/assets/previews/cmu_01_01_in_place.glb",
-      "glb_object_key": "cmu/previews/cmu_01_01_in_place.glb",
-      "glb_sha256": "789abc...",
-      "glb_size_bytes": 64160,
-      "in_place_neutralized_location_curves": 2,
-      "preview_frame": {
-        "floor_y": 0.0,
-        "ceiling_y": 0.7793633461
-      }
-    }
-  }
-}
-```
-
-`source_sha256` intentionally overlaps with the source manifest so stale GLBs
-can be detected. Shared rig, axis, trimming, and optimization settings belong to
-the conversion profile instead of every per-motion JSON file.
-
-### Migrate legacy preview JSON
-
-This is a local JSON schema migration. It does not connect to PostgreSQL, run
-Blender, modify GLBs, or upload to R2.
-
-Validate every JSON before writing:
-
-```powershell
-python -m features.blender_conversion.migrate_metadata --dry-run
-```
-
-Atomically rewrite legacy JSON after validation succeeds:
-
-```powershell
-python -m features.blender_conversion.migrate_metadata --write
-```
-
-Already migrated schema-v2 files are validated and skipped.
-
-## Skeleton preview
-
-Run a local static server from the repository root:
+Start a static server:
 
 ```powershell
 python -m http.server 8000
 ```
 
-Then open:
+Open:
 
 ```text
 http://localhost:8000/src/features/skeleton_preview/glb_skeleton_viewer.html
 ```
 
-The viewer loads repository-relative paths such as:
+The viewer loads animation GLBs from `data/assets/previews/` and applies their
+clips to `/data/assets/templates/cmu_humanoid.glb`.
 
-```text
-/data/assets/previews/cmu_01_01.glb
-/data/assets/humanoid/cmu_humanoid.glb
-```
+## Upload motion assets to R2
 
-The browser loads the shared humanoid once, then applies animation clips from
-the animation-only GLBs to its matching Mixamo skeleton.
-
-## Cloudflare R2 upload
-
-Create R2 S3 API credentials and add the upload configuration to `.env`:
-
-```dotenv
-R2_ENDPOINT_URL=https://ACCOUNT_ID.r2.cloudflarestorage.com
-R2_BUCKET_NAME=your-bucket
-R2_ACCESS_KEY_ID=your-access-key-id
-R2_SECRET_ACCESS_KEY=your-secret-access-key
-```
-
-Upload every converted motion and atomically write the verified full-snapshot
-asset manifest:
+Configure the R2 variables from `.env.example`, then upload every converted
+motion:
 
 ```powershell
 python -m features.r2_upload
 ```
 
-The feature validates all selected source hashes, local GLB hashes, sizes, and
-object-key uniqueness before contacting R2. It uploads both GLB roles, verifies
-their sizes and recorded SHA-256 metadata with R2 `HEAD` requests, and writes:
+The uploader validates source hashes, local GLB hashes and sizes, and unique
+object keys before contacting R2. It uploads both GLB roles, verifies them with
+`HEAD`, and atomically writes:
 
 ```text
 data/manifests/r2_assets.json
 ```
 
-For a limited trial, use a non-default output so the full manifest cannot be
-replaced accidentally:
+For a limited trial, use a non-default output so the authoritative snapshot
+cannot be replaced:
 
 ```powershell
-python -m features.r2_upload --limit 1 --output data\manifests\r2_assets_trial.json
+python -m features.r2_upload `
+  --limit 1 `
+  --output data\manifests\r2_assets_trial.json
 ```
 
-If an upload or verification fails, the destination manifest is left unchanged.
-Objects uploaded earlier in that attempt may remain in R2 and can be overwritten
-safely by a retry because object keys are deterministic.
+If upload or verification fails, the destination manifest remains unchanged.
+Objects uploaded earlier in that attempt may remain in R2 and are safe to
+overwrite because keys are deterministic.
 
-The shared humanoid is a separately verified asset at:
+The canonical shared humanoid is separately stored at:
 
 ```text
 cmu/humanoid/cmu_humanoid.glb
 ```
 
-Its verified object key, SHA-256, size, and upload timestamp are recorded in:
+Its verified record is in `data/manifests/r2_shared_assets.json`.
 
-```text
-data/manifests/r2_shared_assets.json
-```
+## Import PostgreSQL catalog
 
-## PostgreSQL import
-
-Create a `.env` file containing:
-
-```dotenv
-DATABASE_URL=postgresql://username:password@localhost:5432/database_name
-```
-
-Then import all three catalog manifests:
+Set `DATABASE_URL` in `.env`, then import all three verified manifests:
 
 ```powershell
 python -m features.postgres
 ```
 
-The importer creates `public.motions`, `public.motion_assets`, and
-`public.shared_assets` when necessary. It atomically upserts motion records,
-verified per-motion assets by `source_id`, and verified shared assets by
-`asset_id`.
-
-Override any input when needed:
+Override inputs when needed:
 
 ```powershell
 python -m features.postgres `
@@ -352,99 +218,33 @@ python -m features.postgres `
   --shared-assets-input data\manifests\r2_shared_assets.json
 ```
 
-Before opening PostgreSQL, the importer verifies asset source IDs and source
-hashes against the motion manifest, requires valid BVHs, validates both GLB
-roles and their integrity metadata, checks object-key uniqueness, and validates
-upload timestamps. It also validates shared asset IDs, hashes, sizes, timestamps,
-and object keys, including collisions with motion assets. Local preview JSON and
-failed conversions are not imported; a `public.motion_assets` row means both
-GLBs were uploaded and verified.
+The importer validates every manifest before connecting, then creates and
+upserts `public.motions`, `public.motion_assets`, and `public.shared_assets` in
+one transaction. Any SQL failure rolls back the entire import.
 
-## Manifest schemas
+## Data contracts
 
-### Motion index
+Exact JSON shapes, integrity relationships, upload guarantees, database
+mappings, and preview-metadata migration commands live in
+[docs/data-contracts.md](docs/data-contracts.md).
 
-```json
-{
-  "source_id": "cmu:01:01",
-  "subject_id": 1,
-  "trial_id": 1,
-  "filename": "01_01.bvh",
-  "subject_description": "climb, swing, hang on playground equipment",
-  "description": "playground - forward jumps, turn around"
-}
+Key rules:
+
+- `source_id` joins motion records to converted assets.
+- `source_sha256` prevents uploads built from stale BVHs.
+- Playback and in-place GLBs have distinct deterministic object keys.
+- A `motion_assets` row means both GLB roles were uploaded and verified.
+- The canonical humanoid is 151,240 bytes with SHA-256
+  `492653b9e4f06f89f95050698e41f63fc86cd5ccdcc00d4dad16bf338f9354cb`.
+
+## Contributing
+
+Run the isolated test suite and linter:
+
+```powershell
+python -m pytest -q
+python -m ruff check .
 ```
 
-### BVH metadata
-
-```json
-{
-  "filename": "01_01.bvh",
-  "relative_path": "001/01_01.bvh",
-  "subject_id": 1,
-  "trial_id": 1,
-  "source_size_bytes": 12345678,
-  "sha256": "abc123...",
-  "frame_count": 2752,
-  "frame_time": 0.0083333,
-  "frame_rate": 120.00048,
-  "duration_seconds": 22.9332416,
-  "joint_count": 31,
-  "channel_count": 96,
-  "validation_status": "valid"
-}
-```
-
-### Joined motion manifest
-
-```json
-{
-  "source_id": "cmu:01:01",
-  "subject_id": 1,
-  "trial_id": 1,
-  "filename": "01_01.bvh",
-  "subject_description": "climb, swing, hang on playground equipment",
-  "description": "playground - forward jumps, turn around",
-  "frame_count": 2752,
-  "frame_time": 0.0083333,
-  "frame_rate": 120.00048,
-  "duration_seconds": 22.9332416,
-  "joint_count": 31,
-  "channel_count": 96,
-  "sha256": "abc123...",
-  "validation_status": "valid",
-  "relative_path": "001/01_01.bvh"
-}
-```
-
-`source_size_bytes` is currently generated in `bvh_metadata.json` but is not yet
-propagated into `motions.json` or PostgreSQL.
-
-### Shared R2 assets
-
-```json
-{
-  "asset_id": "humanoid",
-  "object_key": "cmu/humanoid/cmu_humanoid.glb",
-  "sha256": "0fe29c30c2a3f982c6c12e8996dbba9dac4cb1eb35fd7578a786f734b8a41fb0",
-  "size_bytes": 100012,
-  "uploaded_at": "2026-07-27T00:00:00Z"
-}
-```
-
-## R2 asset flow
-
-The preview JSON contains deterministic object keys, hashes, and sizes. Verified
-uploads flow into PostgreSQL as:
-
-```text
-validated converted GLBs
-    -> upload normal and in-place GLBs to Cloudflare R2
-    -> verify both objects
-    -> generate a successful-assets manifest
-    -> import one motion_assets row per source_id into PostgreSQL
-```
-
-The catalog searches one `motions` row per animation and joins its corresponding
-`motion_assets` row. The preview card uses the in-place GLB object key, while
-the detail viewer uses the normal GLB object key.
+Tests require no Blender executable, network access, R2 credentials, or live
+PostgreSQL database.

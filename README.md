@@ -5,9 +5,9 @@ The project parses catalog metadata, validates BVH files, builds a joined motion
 manifest, retargets animations onto a shared humanoid rig, and exports
 browser-ready GLBs with integrity metadata.
 
-The PostgreSQL feature imports the joined motion manifest. The R2 upload feature
-uploads and verifies converted GLBs and writes the asset manifest that will feed
-the planned PostgreSQL asset-key import.
+The PostgreSQL feature imports the joined motion manifest and verified R2 asset
+metadata. The R2 upload feature uploads and verifies converted GLBs and writes
+the authoritative asset manifest.
 
 ## Repository layout
 
@@ -23,7 +23,7 @@ src/features/
   blender_conversion/    Retarget, export, and describe GLB assets
   skeleton_preview/      Static Three.js GLB viewer
   r2_upload/              Upload and verify converted GLBs in Cloudflare R2
-  postgres/              Import motions.json into PostgreSQL
+  postgres/              Import motions and verified assets into PostgreSQL
 
 data/manifests/
   source.json
@@ -68,6 +68,10 @@ motions.json
 motions.json + converted GLBs + preview JSON
     -> features.r2_upload
     -> Cloudflare R2 + data/manifests/r2_assets.json
+
+motions.json + r2_assets.json
+    -> features.postgres
+    -> public.motions + public.motion_assets
 ```
 
 The joined manifest is BVH-led. A BVH without a motion-index entry remains in
@@ -316,17 +320,29 @@ Create a `.env` file containing:
 DATABASE_URL=postgresql://username:password@localhost:5432/database_name
 ```
 
-Then run:
+Then import both catalog manifests:
 
 ```powershell
 python -m features.postgres
 ```
 
-The current importer creates `public.motions` when necessary and atomically
-upserts every record from `data/manifests/motions.json` by `source_id`.
+The importer creates `public.motions` and `public.motion_assets` when necessary,
+then atomically upserts records from `data/manifests/motions.json` and verified
+asset records from `data/manifests/r2_assets.json` by `source_id`.
 
-It does not currently import preview JSON, GLB object keys, conversion metadata,
-or R2 upload state.
+Override either input when needed:
+
+```powershell
+python -m features.postgres `
+  --input data\manifests\motions.json `
+  --assets-input data\manifests\r2_assets.json
+```
+
+Before opening PostgreSQL, the importer verifies asset source IDs and source
+hashes against the motion manifest, requires valid BVHs, validates both GLB
+roles and their integrity metadata, checks object-key uniqueness, and validates
+upload timestamps. Local preview JSON and failed conversions are not imported;
+a `public.motion_assets` row means both GLBs were uploaded and verified.
 
 ## Manifest schemas
 
@@ -388,10 +404,10 @@ or R2 upload state.
 `source_size_bytes` is currently generated in `bvh_metadata.json` but is not yet
 propagated into `motions.json` or PostgreSQL.
 
-## Planned R2 asset flow
+## R2 asset flow
 
-The preview JSON already contains deterministic object keys, hashes, and sizes.
-The remaining storage pipeline is planned as:
+The preview JSON contains deterministic object keys, hashes, and sizes. Verified
+uploads flow into PostgreSQL as:
 
 ```text
 validated converted GLBs
@@ -401,5 +417,6 @@ validated converted GLBs
     -> import one motion_assets row per source_id into PostgreSQL
 ```
 
-The future catalog should search one `motions` row per animation. Its preview
-card uses the in-place GLB, while its detail viewer uses the normal GLB.
+The catalog searches one `motions` row per animation and joins its corresponding
+`motion_assets` row. The preview card uses the in-place GLB object key, while
+the detail viewer uses the normal GLB object key.

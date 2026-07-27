@@ -49,6 +49,13 @@ ASSET_INPUT_FIELDS = (
 )
 
 ASSET_FIELDS = tuple(field for field in ASSET_INPUT_FIELDS if field != "source_sha256")
+SHARED_ASSET_FIELDS = (
+    "asset_id",
+    "object_key",
+    "sha256",
+    "size_bytes",
+    "uploaded_at",
+)
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 CREATE_TABLE_SQL = """
@@ -85,6 +92,17 @@ CREATE TABLE IF NOT EXISTS public.motion_assets (
     preview_glb_size_bytes BIGINT NOT NULL,
     preview_floor_y DOUBLE PRECISION,
     preview_ceiling_y DOUBLE PRECISION,
+    uploaded_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+"""
+
+CREATE_SHARED_ASSET_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS public.shared_assets (
+    asset_id TEXT PRIMARY KEY,
+    object_key TEXT NOT NULL UNIQUE,
+    sha256 TEXT NOT NULL,
+    size_bytes BIGINT NOT NULL,
     uploaded_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 )
@@ -156,6 +174,24 @@ ON CONFLICT (source_id) DO UPDATE SET
     preview_glb_size_bytes = EXCLUDED.preview_glb_size_bytes,
     preview_floor_y = EXCLUDED.preview_floor_y,
     preview_ceiling_y = EXCLUDED.preview_ceiling_y,
+    uploaded_at = EXCLUDED.uploaded_at,
+    updated_at = now()
+"""
+
+UPSERT_SHARED_ASSET_SQL = """
+INSERT INTO public.shared_assets (
+    asset_id,
+    object_key,
+    sha256,
+    size_bytes,
+    uploaded_at
+) VALUES (
+    %s, %s, %s, %s, %s
+)
+ON CONFLICT (asset_id) DO UPDATE SET
+    object_key = EXCLUDED.object_key,
+    sha256 = EXCLUDED.sha256,
+    size_bytes = EXCLUDED.size_bytes,
     uploaded_at = EXCLUDED.uploaded_at,
     updated_at = now()
 """
@@ -284,6 +320,46 @@ def _read_asset_manifest(
     return validated
 
 
+def _read_shared_asset_manifest(
+    path: Path,
+    motion_assets: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Read and validate the verified shared R2 asset manifest."""
+    object_keys = {
+        asset[key_field]
+        for asset in motion_assets
+        for key_field in ("playback_glb_object_key", "preview_glb_object_key")
+    }
+    records = read_json_object_array(path)
+    validated: list[dict[str, Any]] = []
+    asset_ids: set[str] = set()
+    for record in records:
+        missing = [field for field in SHARED_ASSET_FIELDS if field not in record]
+        if missing:
+            raise ValueError(f"Record in {path} is missing fields: {', '.join(missing)}")
+
+        asset_id = _require_string(record["asset_id"], "asset_id", path.name)
+        if asset_id in asset_ids:
+            raise ValueError(f"Duplicate shared asset_id: {asset_id}")
+        asset_ids.add(asset_id)
+
+        object_key = _require_string(record["object_key"], "object_key", asset_id)
+        if object_key in object_keys:
+            raise ValueError(f"Duplicate R2 object key across asset manifests: {object_key}")
+        object_keys.add(object_key)
+
+        converted = dict(record)
+        converted["asset_id"] = asset_id
+        converted["object_key"] = object_key
+        converted["sha256"] = _require_sha256(record["sha256"], "sha256", asset_id)
+        converted["size_bytes"] = _require_positive_int(
+            record["size_bytes"], "size_bytes", asset_id
+        )
+        converted["uploaded_at"] = _require_timestamp(record["uploaded_at"], asset_id)
+        validated.append(converted)
+    return validated
+
+
 def _record_values(record: dict[str, Any]) -> tuple[Any, ...]:
     """Convert one manifest record to SQL parameter order."""
     return tuple(record[field] for field in MOTION_FIELDS)
@@ -292,6 +368,11 @@ def _record_values(record: dict[str, Any]) -> tuple[Any, ...]:
 def _asset_values(record: dict[str, Any]) -> tuple[Any, ...]:
     """Convert one asset record to SQL parameter order."""
     return tuple(record[field] for field in ASSET_FIELDS)
+
+
+def _shared_asset_values(record: dict[str, Any]) -> tuple[Any, ...]:
+    """Convert one shared asset record to SQL parameter order."""
+    return tuple(record[field] for field in SHARED_ASSET_FIELDS)
 
 
 def import_motion_manifest(database_url: str, manifest_path: Path) -> int:
@@ -319,18 +400,21 @@ def import_catalog(
     database_url: str,
     motion_manifest_path: Path,
     asset_manifest_path: Path,
-) -> tuple[int, int]:
+    shared_asset_manifest_path: Path,
+) -> tuple[int, int, int]:
     """Create catalog tables and atomically upsert motions and verified assets."""
     if not database_url.strip():
         raise ValueError("database_url must not be empty")
 
     motions = _read_motion_manifest(motion_manifest_path)
     assets = _read_asset_manifest(asset_manifest_path, motions)
+    shared_assets = _read_shared_asset_manifest(shared_asset_manifest_path, assets)
     connection = psycopg.connect(database_url)
     try:
         with connection.cursor() as cursor:
             cursor.execute(CREATE_TABLE_SQL)
             cursor.execute(CREATE_ASSET_TABLE_SQL)
+            cursor.execute(CREATE_SHARED_ASSET_TABLE_SQL)
             if motions:
                 cursor.executemany(UPSERT_SQL, [_record_values(record) for record in motions])
             if assets:
@@ -338,10 +422,15 @@ def import_catalog(
                     UPSERT_ASSET_SQL,
                     [_asset_values(record) for record in assets],
                 )
+            if shared_assets:
+                cursor.executemany(
+                    UPSERT_SHARED_ASSET_SQL,
+                    [_shared_asset_values(record) for record in shared_assets],
+                )
         connection.commit()
     except Exception:
         connection.rollback()
         raise
     finally:
         connection.close()
-    return len(motions), len(assets)
+    return len(motions), len(assets), len(shared_assets)

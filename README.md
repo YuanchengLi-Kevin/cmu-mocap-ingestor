@@ -5,9 +5,9 @@ The project parses catalog metadata, validates BVH files, builds a joined motion
 manifest, retargets animations onto a shared humanoid rig, and exports
 browser-ready GLBs with integrity metadata.
 
-The PostgreSQL feature imports the joined motion manifest and verified R2 asset
-metadata. The R2 upload feature uploads and verifies converted GLBs and writes
-the authoritative asset manifest.
+The PostgreSQL feature imports the joined motion manifest and verified motion
+and shared R2 asset metadata. The R2 upload feature uploads and verifies
+converted GLBs and writes the authoritative motion asset manifest.
 
 ## Repository layout
 
@@ -69,9 +69,9 @@ motions.json + converted GLBs + preview JSON
     -> features.r2_upload
     -> Cloudflare R2 + data/manifests/r2_assets.json
 
-motions.json + r2_assets.json
+motions.json + r2_assets.json + r2_shared_assets.json
     -> features.postgres
-    -> public.motions + public.motion_assets
+    -> public.motions + public.motion_assets + public.shared_assets
 ```
 
 The joined manifest is BVH-led. A BVH without a motion-index entry remains in
@@ -312,6 +312,18 @@ If an upload or verification fails, the destination manifest is left unchanged.
 Objects uploaded earlier in that attempt may remain in R2 and can be overwritten
 safely by a retry because object keys are deterministic.
 
+The shared humanoid is a separately verified asset at:
+
+```text
+cmu/humanoid/cmu_humanoid.glb
+```
+
+Its verified object key, SHA-256, size, and upload timestamp are recorded in:
+
+```text
+data/manifests/r2_shared_assets.json
+```
+
 ## PostgreSQL import
 
 Create a `.env` file containing:
@@ -320,29 +332,33 @@ Create a `.env` file containing:
 DATABASE_URL=postgresql://username:password@localhost:5432/database_name
 ```
 
-Then import both catalog manifests:
+Then import all three catalog manifests:
 
 ```powershell
 python -m features.postgres
 ```
 
-The importer creates `public.motions` and `public.motion_assets` when necessary,
-then atomically upserts records from `data/manifests/motions.json` and verified
-asset records from `data/manifests/r2_assets.json` by `source_id`.
+The importer creates `public.motions`, `public.motion_assets`, and
+`public.shared_assets` when necessary. It atomically upserts motion records,
+verified per-motion assets by `source_id`, and verified shared assets by
+`asset_id`.
 
-Override either input when needed:
+Override any input when needed:
 
 ```powershell
 python -m features.postgres `
   --input data\manifests\motions.json `
-  --assets-input data\manifests\r2_assets.json
+  --assets-input data\manifests\r2_assets.json `
+  --shared-assets-input data\manifests\r2_shared_assets.json
 ```
 
 Before opening PostgreSQL, the importer verifies asset source IDs and source
 hashes against the motion manifest, requires valid BVHs, validates both GLB
 roles and their integrity metadata, checks object-key uniqueness, and validates
-upload timestamps. Local preview JSON and failed conversions are not imported;
-a `public.motion_assets` row means both GLBs were uploaded and verified.
+upload timestamps. It also validates shared asset IDs, hashes, sizes, timestamps,
+and object keys, including collisions with motion assets. Local preview JSON and
+failed conversions are not imported; a `public.motion_assets` row means both
+GLBs were uploaded and verified.
 
 ## Manifest schemas
 
@@ -403,6 +419,18 @@ a `public.motion_assets` row means both GLBs were uploaded and verified.
 
 `source_size_bytes` is currently generated in `bvh_metadata.json` but is not yet
 propagated into `motions.json` or PostgreSQL.
+
+### Shared R2 assets
+
+```json
+{
+  "asset_id": "humanoid",
+  "object_key": "cmu/humanoid/cmu_humanoid.glb",
+  "sha256": "0fe29c30c2a3f982c6c12e8996dbba9dac4cb1eb35fd7578a786f734b8a41fb0",
+  "size_bytes": 100012,
+  "uploaded_at": "2026-07-27T00:00:00Z"
+}
+```
 
 ## R2 asset flow
 

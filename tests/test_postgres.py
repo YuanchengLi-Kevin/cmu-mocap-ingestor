@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 import pytest
 
@@ -44,7 +44,7 @@ class FakeCursor:
         self.upsert_sql = ""
         self.rows: list[tuple[Any, ...]] = []
 
-    def __enter__(self) -> FakeCursor:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *args: object) -> None:

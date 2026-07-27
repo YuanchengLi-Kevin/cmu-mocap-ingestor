@@ -13,7 +13,6 @@ from typing import Any
 
 from features.blender_conversion.conversion_metadata import migrate_metadata
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_METADATA_DIR = REPOSITORY_ROOT / "data/assets/previews"
 
@@ -41,7 +40,7 @@ def read_object(path: Path) -> dict[str, Any]:
     """Read one JSON object."""
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
-        raise ValueError(f"Metadata must be a JSON object: {path}")
+        raise TypeError(f"Metadata must be a JSON object: {path}")
     return value
 
 

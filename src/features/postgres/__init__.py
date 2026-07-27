@@ -15,7 +15,6 @@ import psycopg
 
 from core.json_io import read_json_object_array
 
-
 MOTION_FIELDS = (
     "source_id",
     "subject_id",
@@ -213,7 +212,7 @@ def _require_timestamp(value: Any, source_id: str) -> datetime:
     """Return a timezone-aware upload timestamp."""
     text = _require_string(value, "uploaded_at", source_id)
     try:
-        timestamp = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        timestamp = datetime.fromisoformat(text)
     except ValueError as error:
         raise ValueError(f"{source_id} has invalid uploaded_at") from error
     if timestamp.tzinfo is None or timestamp.utcoffset() is None:

@@ -11,7 +11,6 @@ from typing import Any
 
 from core.json_io import write_json_array
 
-
 SUBJECT_PATTERN = re.compile(r"^Subject #(\d+) \((.+)\)$")
 ANIMATION_PATTERN = re.compile(r"^(\d+)_(\d+)\s+(.+)$")
 

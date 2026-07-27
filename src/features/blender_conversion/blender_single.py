@@ -28,13 +28,13 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
-from core.files import sha256_file  # noqa: E402
-from features.blender_conversion.conversion_metadata import (  # noqa: E402
+import bpy
+
+from core.files import sha256_file
+from features.blender_conversion.conversion_metadata import (
     METADATA_SCHEMA_VERSION,
     validate_args_against_profile,
 )
-
-import bpy  # noqa: E402
 
 DEFAULT_SOURCE_FRAME_RATE = 120.0
 DEFAULT_RETARGET_FRAME_RATE = 30.0
@@ -287,7 +287,7 @@ def enable_addon(module: str) -> None:
     """Enable a Blender add-on if this Blender build exposes it."""
     try:
         bpy.ops.preferences.addon_enable(module=module)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return
 
 
@@ -775,14 +775,12 @@ def retarget_animation(
     source_to_retarget_ratio = DEFAULT_RETARGET_FRAME_RATE / source_frame_rate
     scene.frame_end = max(
         scene.frame_start,
-        int(
-            round(
-                scene.frame_start
-                + ((source_frame_end - scene.frame_start) * source_to_retarget_ratio)
-            )
+        round(
+            scene.frame_start
+            + ((source_frame_end - scene.frame_start) * source_to_retarget_ratio)
         ),
     )
-    scene.render.fps = int(round(DEFAULT_RETARGET_FRAME_RATE))
+    scene.render.fps = round(DEFAULT_RETARGET_FRAME_RATE)
 
     scene.rsl_retargeting_armature_source = source
     scene.rsl_retargeting_armature_target = target
@@ -810,7 +808,7 @@ def retarget_animation(
             f"({DEFAULT_RETARGET_FRAME_RATE})"
         )
     frame_start = scene.frame_start
-    scene.render.fps = int(round(export_frame_rate))
+    scene.render.fps = round(export_frame_rate)
     return RetargetResult(
         action=target_action,
         source_frame_start=source_frame_start,

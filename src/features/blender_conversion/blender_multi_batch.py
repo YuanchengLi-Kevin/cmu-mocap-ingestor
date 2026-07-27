@@ -17,9 +17,10 @@ import json
 import os
 import subprocess
 import tempfile
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from threading import Thread
-from typing import Any, Callable, Sequence
+from typing import Any
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_MANIFEST = REPOSITORY_ROOT / "data/manifests/motions.json"
@@ -221,12 +222,12 @@ def select_records(args: argparse.Namespace) -> list[dict[str, Any]]:
     """Read valid manifest records and apply limit/resume filtering."""
     records = json.loads(args.manifest.read_text(encoding="utf-8"))
     if not isinstance(records, list):
-        raise ValueError(f"Manifest is not a JSON array: {args.manifest}")
+        raise TypeError(f"Manifest is not a JSON array: {args.manifest}")
 
     selected = []
     for record in records:
         if not isinstance(record, dict):
-            raise ValueError(f"Manifest contains a non-object record: {args.manifest}")
+            raise TypeError(f"Manifest contains a non-object record: {args.manifest}")
         if record.get("validation_status") != "valid":
             continue
         if args.skip_existing_metadata and is_converted_metadata(metadata_path(args, record)):

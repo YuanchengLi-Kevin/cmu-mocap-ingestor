@@ -24,11 +24,10 @@ SOURCE_ROOT = Path(__file__).resolve().parents[2]
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
-from core.files import sha256_file  # noqa: E402
+import bpy
+from mathutils import Vector
 
-import bpy  # noqa: E402
-from mathutils import Vector  # noqa: E402
-
+from core.files import sha256_file
 
 DEFAULT_AXIS_FORWARD = "-Z"
 DEFAULT_AXIS_UP = "Y"
@@ -151,7 +150,7 @@ def enable_addon(module: str) -> None:
     """Enable a Blender add-on if this Blender build exposes it."""
     try:
         bpy.ops.preferences.addon_enable(module=module)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return
 
 
@@ -299,7 +298,7 @@ def configure_timing(args: argparse.Namespace, armature: bpy.types.Object) -> tu
         scene.frame_end = args.frame_count
     else:
         action = armature.animation_data.action
-        scene.frame_end = max(1, int(round(action.frame_range[1])))
+        scene.frame_end = max(1, round(action.frame_range[1]))
 
     if args.target_frame_rate is not None:
         if fps is None:
@@ -313,11 +312,11 @@ def configure_timing(args: argparse.Namespace, armature: bpy.types.Object) -> tu
         ratio = args.target_frame_rate / fps
         scene.frame_end = max(
             scene.frame_start,
-            int(round(scene.frame_start + ((scene.frame_end - scene.frame_start) * ratio))),
+            round(scene.frame_start + ((scene.frame_end - scene.frame_start) * ratio)),
         )
-        scene.render.fps = max(1, int(round(args.target_frame_rate)))
+        scene.render.fps = max(1, round(args.target_frame_rate))
     elif fps is not None:
-        scene.render.fps = max(1, int(round(fps)))
+        scene.render.fps = max(1, round(fps))
 
     thumbnail_frame = args.thumbnail_frame
     if thumbnail_frame is None:

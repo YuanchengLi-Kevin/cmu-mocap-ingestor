@@ -10,7 +10,6 @@ from pathlib import Path
 
 from features.motion_manifest import build_joined_manifest
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_MOTION_INDEX = REPOSITORY_ROOT / "data/manifests/motion_index.json"
 DEFAULT_BVH_METADATA = REPOSITORY_ROOT / "data/manifests/bvh_metadata.json"

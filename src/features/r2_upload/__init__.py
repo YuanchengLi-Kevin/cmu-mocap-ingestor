@@ -8,13 +8,12 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from core.files import sha256_file
 from core.json_io import read_json_object_array, write_json_array_atomic
-
 
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 
@@ -35,7 +34,7 @@ def _read_json_object(path: Path) -> dict[str, Any]:
     except json.JSONDecodeError as error:
         raise ValueError(f"Invalid JSON in {path}: {error}") from error
     if not isinstance(value, dict):
-        raise ValueError(f"Expected a JSON object in {path}")
+        raise TypeError(f"Expected a JSON object in {path}")
     return value
 
 
@@ -146,11 +145,11 @@ def prepare_uploads(
 
         variants = metadata.get("variants")
         if not isinstance(variants, dict):
-            raise ValueError(f"{source_id} is missing variants")
+            raise TypeError(f"{source_id} is missing variants")
         normal = variants.get("normal")
         in_place = variants.get("in_place")
         if not isinstance(normal, dict) or not isinstance(in_place, dict):
-            raise ValueError(f"{source_id} is missing normal or in_place metadata")
+            raise TypeError(f"{source_id} is missing normal or in_place metadata")
 
         playback_path, playback_key, playback_sha256, playback_size = _local_glb(
             repository_root, normal, source_id
@@ -255,7 +254,7 @@ def upload_prepared_assets(
         )
         verified = dict(record)
         verified["uploaded_at"] = (
-            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            datetime.now(UTC).isoformat().replace("+00:00", "Z")
         )
         records.append(verified)
         print(f"Uploaded {index}/{total}: {record['source_id']}", flush=True)

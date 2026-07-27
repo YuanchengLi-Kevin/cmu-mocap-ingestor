@@ -165,7 +165,8 @@ def test_run_worker_commands_uses_injected_process_factory() -> None:
     launched = []
 
     class FakeProcess:
-        stdout = ["worker output\n"]
+        def __init__(self) -> None:
+            self.stdout = ["worker output\n"]
 
         def wait(self) -> int:
             return 0

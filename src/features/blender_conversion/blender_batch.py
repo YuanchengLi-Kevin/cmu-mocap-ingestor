@@ -27,10 +27,10 @@ DEFAULT_OUTPUT_DIR = REPOSITORY_ROOT / "data/assets/previews"
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
-import bpy  # noqa: E402
+import bpy
 
-from features.blender_conversion import blender_single as single  # noqa: E402
-from features.blender_conversion.conversion_metadata import (  # noqa: E402
+from features.blender_conversion import blender_single as single
+from features.blender_conversion.conversion_metadata import (
     METADATA_SCHEMA_VERSION,
 )
 
@@ -196,7 +196,7 @@ def read_motion_records(path: Path, limit: int) -> list[dict[str, Any]]:
 
     records = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(records, list):
-        raise ValueError(f"Manifest is not a JSON array: {path}")
+        raise TypeError(f"Manifest is not a JSON array: {path}")
 
     selected = []
     for record in records:
@@ -390,7 +390,7 @@ def process_record(
             variants=metadata_variants,
         )
         return True
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001
         print(f"ERROR: {record.get('source_id', '<unknown>')}: {error}")
         write_failure_metadata(single_args.metadata, single_args, error)
         return False

@@ -20,7 +20,7 @@ def read_json_object_array(path: Path) -> list[dict[str, Any]]:
         raise ValueError(f"Invalid JSON in {path}: {error}") from error
 
     if not isinstance(value, list):
-        raise ValueError(f"Expected a JSON array in {path}")
+        raise TypeError(f"Expected a JSON array in {path}")
     if not all(isinstance(record, dict) for record in value):
         raise ValueError(f"Every record in {path} must be a JSON object")
     return value

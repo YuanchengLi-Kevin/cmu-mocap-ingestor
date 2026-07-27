@@ -10,7 +10,6 @@ from pathlib import Path
 
 from features.motion_index import write_motion_index_manifest
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_INPUT = REPOSITORY_ROOT / "data/source/cmu-mocap/cmu-mocap-index-text.txt"
 DEFAULT_OUTPUT = REPOSITORY_ROOT / "data/manifests/motion_index.json"

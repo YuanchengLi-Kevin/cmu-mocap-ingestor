@@ -12,7 +12,6 @@ from typing import Any
 from core.files import sha256_file
 from core.json_io import write_json_array
 
-
 FILENAME_PATTERN = re.compile(r"^(\d+)_(\d+)\.bvh$", re.IGNORECASE)
 ROOT_PATTERN = re.compile(r"^ROOT\s+\S+")
 JOINT_PATTERN = re.compile(r"^JOINT\s+\S+")

@@ -13,7 +13,6 @@ from dotenv import load_dotenv
 
 from features.postgres import import_catalog
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_INPUT = REPOSITORY_ROOT / "data/manifests/motions.json"
 DEFAULT_ASSETS_INPUT = REPOSITORY_ROOT / "data/manifests/r2_assets.json"

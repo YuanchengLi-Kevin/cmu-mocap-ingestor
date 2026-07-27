@@ -10,7 +10,6 @@ from pathlib import Path
 
 from features.bvh_metadata import write_bvh_metadata_manifest
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_INPUT = REPOSITORY_ROOT / "data/source/cmu-mocap/data"
 DEFAULT_OUTPUT = REPOSITORY_ROOT / "data/manifests/bvh_metadata.json"

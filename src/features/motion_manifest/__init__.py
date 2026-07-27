@@ -12,7 +12,6 @@ from typing import Any
 
 from core.json_io import read_json_object_array, write_json_array_atomic
 
-
 FILENAME_PATTERN = re.compile(r"^(\d+)_(\d+)\.bvh$")
 INDEX_FIELDS = (
     "source_id",

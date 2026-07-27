@@ -9,7 +9,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-
 METADATA_SCHEMA_VERSION = 2
 PROFILE_PATH = Path(__file__).with_name("conversion_profiles.json")
 
@@ -101,11 +100,11 @@ def _require_equal(metadata: dict[str, Any], profile: dict[str, Any]) -> None:
     ]
     variants = metadata.get("variants")
     if not isinstance(variants, dict):
-        raise ValueError("converted metadata must contain a variants object")
+        raise TypeError("converted metadata must contain a variants object")
     normal = variants.get("normal")
     in_place = variants.get("in_place")
     if not isinstance(normal, dict) or not isinstance(in_place, dict):
-        raise ValueError("converted metadata must contain normal and in_place variants")
+        raise TypeError("converted metadata must contain normal and in_place variants")
     variant_comparisons = {
         "normal.animation_variant": (normal.get("animation_variant"), "normal"),
         "normal.root_motion": (normal.get("root_motion"), profile["normal"]["root_motion"]),
@@ -182,11 +181,11 @@ def _validate_current_metadata(metadata: dict[str, Any]) -> None:
             raise ValueError(f"current converted metadata is missing field: {key}")
     variants = metadata.get("variants")
     if not isinstance(variants, dict):
-        raise ValueError("current converted metadata must contain a variants object")
+        raise TypeError("current converted metadata must contain a variants object")
     normal = variants.get("normal")
     in_place = variants.get("in_place")
     if not isinstance(normal, dict) or not isinstance(in_place, dict):
-        raise ValueError("current metadata must contain normal and in_place variants")
+        raise TypeError("current metadata must contain normal and in_place variants")
     _reduced_variant(normal, in_place=False)
     _reduced_variant(in_place, in_place=True)
 

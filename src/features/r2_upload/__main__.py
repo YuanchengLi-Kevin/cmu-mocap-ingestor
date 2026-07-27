@@ -14,7 +14,6 @@ from dotenv import load_dotenv
 
 from features.r2_upload import prepare_uploads, upload_prepared_assets
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_MOTIONS = REPOSITORY_ROOT / "data/manifests/motions.json"
 DEFAULT_METADATA_DIR = REPOSITORY_ROOT / "data/assets/previews"
